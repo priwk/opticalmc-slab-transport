@@ -156,6 +156,11 @@ def parse_args() -> argparse.Namespace:
         help="即使 source/event 次生文件已存在，也重新预处理生成。",
     )
     parser.add_argument(
+        "--keep-generated-sources",
+        action="store_true",
+        help="StageB 全流程运行后保留新生成的 source/event 中间 CSV。",
+    )
+    parser.add_argument(
         "--preprocess-only",
         action="store_true",
         help="只生成 source/event 次生文件，不运行 Monte Carlo。",
@@ -291,6 +296,8 @@ def main() -> int:
         cmd.append("--transparent-optics")
     if args.overwrite_sources:
         cmd.append("--overwrite-sources")
+    if args.keep_generated_sources:
+        cmd.append("--keep-generated-sources")
     if args.preprocess_only:
         cmd.append("--preprocess-only")
     if args.mc_only:

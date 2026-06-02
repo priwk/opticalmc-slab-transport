@@ -10,13 +10,16 @@ import re
 import sys
 from collections import OrderedDict
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 
 STEP_FIELDS = [
     "source_id",
     "source_event_uid",
+    "physical_event_uid",
+    "replay_source_event_uid",
     "eventID",
+    "record_index",
     "trackID",
     "stepID",
     "particle",
@@ -52,13 +55,19 @@ STEP_FIELDS = [
     "edep_keV",
     "visible_edep_keV",
     "n_photon_step",
+    "trajectory_weight",
+    "adjusted_trajectory_weight",
+    "alphali_replay_index",
+    "alphali_replay_count",
     "wavelength_nm",
 ]
 
 
 EVENT_FIELDS = [
     "source_event_uid",
+    "physical_event_uid",
     "eventID",
+    "record_index",
     "ratio_tag",
     "bn_wt",
     "zns_wt",
@@ -78,6 +87,11 @@ EVENT_FIELDS = [
     "local_capture_z_um",
     "n_total_steps",
     "n_zns_steps",
+    "n_replays_total",
+    "n_replays_valid",
+    "n_replays_bad",
+    "sum_trajectory_weight",
+    "sum_valid_trajectory_weight",
     "total_edep_keV",
     "total_visible_edep_keV",
     "total_n_photon",
@@ -88,11 +102,15 @@ EVENT_FIELDS = [
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Convert Stage B alpha/Li step CSVs into macroscopic ZnS source "
-            "steps and event-level light summaries."
+            "Convert alpha/Li step CSVs or StageB *_zns_track_steps.csv files into "
+            "macroscopic ZnS source steps and event-level light summaries."
         )
     )
-    parser.add_argument("input_csv", type=Path, help="Raw *_alpha_li_steps.csv file")
+    parser.add_argument(
+        "input_csv",
+        type=Path,
+        help="Raw *_alpha_li_steps.csv file or StageB *_zns_track_steps.csv file.",
+    )
     parser.add_argument(
         "-o",
         "--output-dir",
@@ -100,7 +118,26 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Output directory. Defaults to inputs/generated_sources/<ratio_tag> when the "
-            "input is under inputs/alpha_li_steps/<ratio_tag>, otherwise the input CSV directory."
+            "input is under inputs/alpha_li_steps/<ratio_tag> or inputs/stageB/<ratio_tag>, "
+            "otherwise the input CSV directory."
+        ),
+    )
+    parser.add_argument(
+        "--capture-anchors",
+        type=Path,
+        default=None,
+        help=(
+            "StageB capture anchor CSV. Defaults to the sibling "
+            "<thickness>_capture_anchors.csv for *_zns_track_steps.csv inputs."
+        ),
+    )
+    parser.add_argument(
+        "--unexpected-boundary-exits",
+        type=Path,
+        default=None,
+        help=(
+            "StageB unexpected boundary exit CSV. Defaults to the sibling "
+            "<thickness>_unexpected_boundary_exits.csv for *_zns_track_steps.csv inputs."
         ),
     )
     parser.add_argument(
@@ -189,10 +226,28 @@ def event_uid(ratio_tag: str, thickness_um: float, event_id: str) -> str:
 def default_output_dir(input_csv: Path, ratio_tag: str) -> Path:
     parts = list(input_csv.resolve().parts)
     lowered = [p.lower() for p in parts]
-    if "inputs" in lowered and "alpha_li_steps" in lowered:
+    if "inputs" in lowered and ("alpha_li_steps" in lowered or "stageb" in lowered):
         inputs_index = lowered.index("inputs")
         return Path(*parts[: inputs_index + 1]) / "generated_sources" / ratio_tag
     return input_csv.parent
+
+
+def stageb_sidecar_path(input_csv: Path, suffix: str, explicit: Optional[Path]) -> Path:
+    if explicit is not None:
+        return explicit
+    match = re.match(r"^(.+)_zns_track_steps\.csv$", input_csv.name)
+    if not match:
+        raise ValueError(
+            f"Cannot infer StageB {suffix} path from {input_csv}; pass the explicit option."
+        )
+    return input_csv.with_name(f"{match.group(1)}_{suffix}.csv")
+
+
+def is_stageb_zns_input(path: Path, fieldnames: Optional[Iterable[str]] = None) -> bool:
+    if path.name.endswith("_zns_track_steps.csv"):
+        return True
+    fields = set(fieldnames or [])
+    return {"physical_event_uid", "source_event_uid", "trajectory_weight"}.issubset(fields)
 
 
 def visible_energy_keV(edep_keV: float, step_len_um: float, args: argparse.Namespace) -> float:
@@ -212,10 +267,16 @@ def first_event_record(
     thickness_um: float,
     anchor_x: float,
     anchor_y: float,
+    source_event_uid: Optional[str] = None,
+    physical_event_uid: Optional[str] = None,
 ) -> Dict[str, object]:
+    source_uid = source_event_uid or event_uid(ratio_tag, thickness_um, row.get("eventID", ""))
+    physical_uid = physical_event_uid or source_uid
     return {
-        "source_event_uid": event_uid(ratio_tag, thickness_um, row.get("eventID", "")),
+        "source_event_uid": source_uid,
+        "physical_event_uid": physical_uid,
         "eventID": row.get("eventID", ""),
+        "record_index": row.get("record_index", ""),
         "ratio_tag": ratio_tag,
         "bn_wt": row.get("bn_wt", ""),
         "zns_wt": row.get("zns_wt", ""),
@@ -235,6 +296,11 @@ def first_event_record(
         "local_capture_z_um": row.get("local_capture_z_um", ""),
         "n_total_steps": 0,
         "n_zns_steps": 0,
+        "n_replays_total": 1,
+        "n_replays_valid": 1,
+        "n_replays_bad": 0,
+        "sum_trajectory_weight": 1.0,
+        "sum_valid_trajectory_weight": 1.0,
         "total_edep_keV": 0.0,
         "total_visible_edep_keV": 0.0,
         "total_n_photon": 0.0,
@@ -300,7 +366,303 @@ def segment_length(p0: Tuple[float, float, float], p1: Tuple[float, float, float
     )
 
 
-def make_outputs(args: argparse.Namespace) -> Tuple[Path, Path, int, int]:
+def trajectory_weight(row: Dict[str, str]) -> float:
+    text = row.get("trajectory_weight", "")
+    if text not in (None, ""):
+        return float(text)
+    replay_count = parse_float(row, "alphali_replay_count", 0.0)
+    return 1.0 / replay_count if replay_count > 0.0 else 1.0
+
+
+def increment(record: Dict[str, object], name: str, value: float) -> None:
+    record[name] = float(record.get(name, 0.0)) + value
+
+
+def make_stageb_outputs(args: argparse.Namespace) -> Tuple[Path, Path, int, int]:
+    input_csv = args.input_csv
+    inferred_thickness = infer_thickness(input_csv)
+    if args.thickness_um is not None:
+        thickness_um = args.thickness_um
+    elif inferred_thickness is not None:
+        thickness_um = inferred_thickness
+    else:
+        raise ValueError("Could not infer thickness from file name; pass --thickness-um.")
+
+    ratio_tag = args.ratio_tag or input_csv.parent.name
+    output_dir = args.output_dir or default_output_dir(input_csv, ratio_tag)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stem_thickness = format_number(thickness_um)
+    step_out = output_dir / f"{stem_thickness}_macro_zns_step_sources.csv"
+    event_out = output_dir / f"{stem_thickness}_event_light_sources.csv"
+    anchor_path = stageb_sidecar_path(input_csv, "capture_anchors", args.capture_anchors)
+    unexpected_path = stageb_sidecar_path(
+        input_csv, "unexpected_boundary_exits", args.unexpected_boundary_exits
+    )
+
+    if not anchor_path.exists():
+        raise FileNotFoundError(f"Missing StageB capture anchors file: {anchor_path}")
+    if not unexpected_path.exists():
+        raise FileNotFoundError(f"Missing StageB unexpected boundary exits file: {unexpected_path}")
+
+    anchors: Dict[str, Dict[str, str]] = {}
+    physical_sources: "OrderedDict[str, List[str]]" = OrderedDict()
+    source_weights: Dict[str, float] = {}
+    with anchor_path.open("r", newline="", encoding="utf-8-sig") as fin:
+        reader = csv.DictReader(fin)
+        required = {
+            "physical_event_uid",
+            "source_event_uid",
+            "eventID",
+            "depth_um",
+            "local_capture_x_um",
+            "local_capture_y_um",
+            "local_capture_z_um",
+        }
+        missing = sorted(required - set(reader.fieldnames or []))
+        if missing:
+            raise ValueError(
+                f"Capture anchors CSV is missing required columns: {', '.join(missing)}"
+            )
+        for row in reader:
+            source_uid = row["source_event_uid"]
+            physical_uid = row["physical_event_uid"]
+            if source_uid in anchors:
+                continue
+            anchors[source_uid] = row
+            physical_sources.setdefault(physical_uid, []).append(source_uid)
+            source_weights[source_uid] = trajectory_weight(row)
+
+    bad_sources: Set[str] = set()
+    with unexpected_path.open("r", newline="", encoding="utf-8-sig") as fin:
+        reader = csv.DictReader(fin)
+        required = {"physical_event_uid", "source_event_uid"}
+        missing = sorted(required - set(reader.fieldnames or []))
+        if missing:
+            raise ValueError(
+                "Unexpected boundary exits CSV is missing required columns: "
+                + ", ".join(missing)
+            )
+        for row in reader:
+            source_uid = row["source_event_uid"]
+            bad_sources.add(source_uid)
+
+    adjusted_weights: Dict[str, float] = {}
+    events: "OrderedDict[str, Dict[str, object]]" = OrderedDict()
+    excluded_physical = 0
+    partially_reweighted = 0
+    for physical_uid, sources in physical_sources.items():
+        total_weight = sum(source_weights.get(source, 0.0) for source in sources)
+        good_sources = [source for source in sources if source not in bad_sources]
+        valid_weight = sum(source_weights.get(source, 0.0) for source in good_sources)
+        if not good_sources or valid_weight <= 0.0:
+            excluded_physical += 1
+            continue
+        if len(good_sources) != len(sources):
+            partially_reweighted += 1
+        scale = total_weight / valid_weight if total_weight > 0.0 else 1.0
+        anchor = anchors[good_sources[0]]
+        macro_anchor_x = parse_float(
+            anchor, "capture_x_um" if args.xy_anchor_mode == "capture" else "corr_x_um"
+        )
+        macro_anchor_y = parse_float(
+            anchor, "capture_y_um" if args.xy_anchor_mode == "capture" else "corr_y_um"
+        )
+        record = first_event_record(
+            anchor,
+            ratio_tag,
+            thickness_um,
+            macro_anchor_x,
+            macro_anchor_y,
+            source_event_uid=physical_uid,
+            physical_event_uid=physical_uid,
+        )
+        record["n_replays_total"] = len(sources)
+        record["n_replays_valid"] = len(good_sources)
+        record["n_replays_bad"] = len(sources) - len(good_sources)
+        record["sum_trajectory_weight"] = total_weight
+        record["sum_valid_trajectory_weight"] = valid_weight
+        events[physical_uid] = record
+        for source_uid in good_sources:
+            adjusted_weights[source_uid] = source_weights.get(source_uid, 0.0) * scale
+
+    row_count = 0
+    source_count = 0
+    skipped_bad_rows = 0
+    skipped_missing_anchor = 0
+    skipped_nonpositive = 0
+
+    with input_csv.open("r", newline="", encoding="utf-8-sig") as fin, step_out.open(
+        "w", newline="", encoding="utf-8"
+    ) as fout:
+        reader = csv.DictReader(fin)
+        required = {
+            "physical_event_uid",
+            "source_event_uid",
+            "eventID",
+            "x_pre_um",
+            "y_pre_um",
+            "z_pre_um",
+            "x_post_um",
+            "y_post_um",
+            "z_post_um",
+            "step_len_um",
+            "edep_keV",
+        }
+        missing = sorted(required - set(reader.fieldnames or []))
+        if missing:
+            raise ValueError(
+                f"StageB ZnS track CSV is missing required columns: {', '.join(missing)}"
+            )
+        writer = csv.DictWriter(fout, fieldnames=STEP_FIELDS, lineterminator="\n")
+        writer.writeheader()
+
+        for row in reader:
+            row_count += 1
+            try:
+                source_uid = row["source_event_uid"]
+                physical_uid = row["physical_event_uid"]
+                if source_uid in bad_sources or physical_uid not in events:
+                    skipped_bad_rows += 1
+                    continue
+                anchor = anchors.get(source_uid)
+                if anchor is None:
+                    skipped_missing_anchor += 1
+                    continue
+                edep_keV = parse_float(row, "edep_keV")
+                input_step_len_um = parse_float(row, "step_len_um")
+                if edep_keV <= 0.0 or input_step_len_um <= 0.0:
+                    skipped_nonpositive += 1
+                    continue
+
+                macro_anchor_x = parse_float(
+                    anchor, "capture_x_um" if args.xy_anchor_mode == "capture" else "corr_x_um"
+                )
+                macro_anchor_y = parse_float(
+                    anchor, "capture_y_um" if args.xy_anchor_mode == "capture" else "corr_y_um"
+                )
+                macro_anchor_z = parse_float(anchor, "depth_um")
+                local_capture_x = parse_float(anchor, "local_capture_x_um")
+                local_capture_y = parse_float(anchor, "local_capture_y_um")
+                local_capture_z = parse_float(anchor, "local_capture_z_um")
+
+                p0 = (
+                    macro_anchor_x + (parse_float(row, "x_pre_um") - local_capture_x),
+                    macro_anchor_y + (parse_float(row, "y_pre_um") - local_capture_y),
+                    macro_anchor_z + (parse_float(row, "z_pre_um") - local_capture_z),
+                )
+                p1 = (
+                    macro_anchor_x + (parse_float(row, "x_post_um") - local_capture_x),
+                    macro_anchor_y + (parse_float(row, "y_post_um") - local_capture_y),
+                    macro_anchor_z + (parse_float(row, "z_post_um") - local_capture_z),
+                )
+                clipped = clip_segment_z(
+                    p0, p1, 0.0, thickness_um, max(0.0, args.z_tolerance_um)
+                )
+                if clipped is None:
+                    skipped_nonpositive += 1
+                    continue
+                p0c, p1c = clipped
+                clipped_len = segment_length(p0c, p1c)
+                if clipped_len <= 0.0:
+                    skipped_nonpositive += 1
+                    continue
+
+                adjusted_weight = adjusted_weights[source_uid]
+                raw_weight = source_weights.get(source_uid, trajectory_weight(row))
+                visible_edep_keV = visible_energy_keV(edep_keV, clipped_len, args)
+                weighted_edep_keV = edep_keV * adjusted_weight
+                weighted_visible_edep_keV = visible_edep_keV * adjusted_weight
+                n_photon_step = args.yield_zns_per_MeV * weighted_visible_edep_keV / 1000.0
+                if n_photon_step <= 0.0:
+                    skipped_nonpositive += 1
+                    continue
+                source_id = source_count
+                source_count += 1
+
+                event = events[physical_uid]
+                event["n_total_steps"] = int(event["n_total_steps"]) + 1
+                event["n_zns_steps"] = int(event["n_zns_steps"]) + 1
+                increment(event, "total_edep_keV", weighted_edep_keV)
+                increment(event, "total_visible_edep_keV", weighted_visible_edep_keV)
+                increment(event, "total_n_photon", n_photon_step)
+                event["has_zns_edep"] = 1
+
+                writer.writerow(
+                    {
+                        "source_id": source_id,
+                        "source_event_uid": physical_uid,
+                        "physical_event_uid": physical_uid,
+                        "replay_source_event_uid": source_uid,
+                        "eventID": row.get("eventID", ""),
+                        "record_index": row.get("record_index", anchor.get("record_index", "")),
+                        "trackID": row.get("trackID", ""),
+                        "stepID": row.get("stepID", ""),
+                        "particle": row.get("particle", ""),
+                        "ratio_tag": ratio_tag,
+                        "bn_wt": anchor.get("bn_wt", ""),
+                        "zns_wt": anchor.get("zns_wt", ""),
+                        "thickness_um": thickness_um,
+                        "placement_file": anchor.get("placement_file", ""),
+                        "surface_mode": anchor.get("surface_mode", ""),
+                        "capture_x_um": anchor.get("capture_x_um", ""),
+                        "capture_y_um": anchor.get("capture_y_um", ""),
+                        "corr_x_um": anchor.get("corr_x_um", ""),
+                        "corr_y_um": anchor.get("corr_y_um", ""),
+                        "depth_um": anchor.get("depth_um", ""),
+                        "macro_anchor_x_um": macro_anchor_x,
+                        "macro_anchor_y_um": macro_anchor_y,
+                        "macro_anchor_z_um": macro_anchor_z,
+                        "local_capture_x_um": local_capture_x,
+                        "local_capture_y_um": local_capture_y,
+                        "local_capture_z_um": local_capture_z,
+                        "phase_pre": row.get("phase_pre", "ZnS"),
+                        "phase_post": row.get("phase_post", ""),
+                        "src_x0_um": p0c[0],
+                        "src_y0_um": p0c[1],
+                        "src_z0_um": p0c[2],
+                        "src_x1_um": p1c[0],
+                        "src_y1_um": p1c[1],
+                        "src_z1_um": p1c[2],
+                        "src_mid_x_um": 0.5 * (p0c[0] + p1c[0]),
+                        "src_mid_y_um": 0.5 * (p0c[1] + p1c[1]),
+                        "src_mid_z_um": 0.5 * (p0c[2] + p1c[2]),
+                        "step_len_um": clipped_len,
+                        "edep_keV": weighted_edep_keV,
+                        "visible_edep_keV": weighted_visible_edep_keV,
+                        "n_photon_step": n_photon_step,
+                        "trajectory_weight": raw_weight,
+                        "adjusted_trajectory_weight": adjusted_weight,
+                        "alphali_replay_index": row.get(
+                            "alphali_replay_index", anchor.get("alphali_replay_index", "")
+                        ),
+                        "alphali_replay_count": row.get(
+                            "alphali_replay_count", anchor.get("alphali_replay_count", "")
+                        ),
+                        "wavelength_nm": args.wavelength_nm,
+                    }
+                )
+            except Exception as exc:
+                raise ValueError(f"Failed while processing StageB row {row_count}: {exc}") from exc
+
+    with event_out.open("w", newline="", encoding="utf-8") as fout:
+        writer = csv.DictWriter(fout, fieldnames=EVENT_FIELDS, lineterminator="\n")
+        writer.writeheader()
+        for record in events.values():
+            writer.writerow({name: format_number(record.get(name, "")) for name in EVENT_FIELDS})
+
+    print(f"stageb_capture_anchors,{anchor_path}", file=sys.stderr)
+    print(f"stageb_unexpected_boundary_exits,{unexpected_path}", file=sys.stderr)
+    print(f"stageb_physical_events_total,{len(physical_sources)}", file=sys.stderr)
+    print(f"stageb_physical_events_excluded,{excluded_physical}", file=sys.stderr)
+    print(f"stageb_physical_events_reweighted,{partially_reweighted}", file=sys.stderr)
+    print(f"stageb_bad_zns_rows_skipped,{skipped_bad_rows}", file=sys.stderr)
+    print(f"stageb_missing_anchor_rows_skipped,{skipped_missing_anchor}", file=sys.stderr)
+    print(f"stageb_nonpositive_rows_skipped,{skipped_nonpositive}", file=sys.stderr)
+
+    return step_out, event_out, row_count, source_count
+
+
+def make_alpha_outputs(args: argparse.Namespace) -> Tuple[Path, Path, int, int]:
     input_csv = args.input_csv
     inferred_thickness = infer_thickness(input_csv)
     if args.thickness_um is not None:
@@ -482,6 +844,15 @@ def make_outputs(args: argparse.Namespace) -> Tuple[Path, Path, int, int]:
             writer.writerow({name: format_number(record.get(name, "")) for name in EVENT_FIELDS})
 
     return step_out, event_out, row_count, source_count
+
+
+def make_outputs(args: argparse.Namespace) -> Tuple[Path, Path, int, int]:
+    with args.input_csv.open("r", newline="", encoding="utf-8-sig") as fin:
+        reader = csv.DictReader(fin)
+        fieldnames = reader.fieldnames or []
+    if is_stageb_zns_input(args.input_csv, fieldnames):
+        return make_stageb_outputs(args)
+    return make_alpha_outputs(args)
 
 
 def main() -> int:

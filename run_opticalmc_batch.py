@@ -32,6 +32,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--inputs-dir", type=Path, default=Path("inputs"))
     parser.add_argument("--alpha-li-dirname", default="alpha_li_steps")
+    parser.add_argument("--stageb-dirname", default="stageB")
+    parser.add_argument(
+        "--source-input-mode",
+        choices=("auto", "stageb", "alpha-li"),
+        default="auto",
+        help="Source preprocessing input mode. auto prefers StageB *_zns_track_steps.csv files.",
+    )
     parser.add_argument("--optical-param-dirname", default="optical_params")
     parser.add_argument("--generated-dirname", default="generated_sources")
     parser.add_argument("--outputs-dir", type=Path, default=Path("outputs"))
@@ -94,6 +101,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--psf-range-um", type=float, default=500.0)
     parser.add_argument("--output-detected-photons", action="store_true")
     parser.add_argument("--overwrite-sources", action="store_true", help="Regenerate source/event CSVs even if they already exist.")
+    parser.add_argument(
+        "--keep-generated-sources",
+        action="store_true",
+        help=(
+            "Keep StageB-generated source/event CSVs after a full MC run. By default, "
+            "newly generated StageB intermediates are removed after OpticalMC finishes."
+        ),
+    )
     parser.add_argument("--preprocess-only", action="store_true")
     parser.add_argument("--mc-only", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -111,7 +126,10 @@ def parse_args() -> argparse.Namespace:
 
 
 def thickness_from_path(path: Path) -> Optional[float]:
-    match = re.match(r"^([0-9]+(?:\.[0-9]+)?)_alpha_li_steps\.csv$", path.name)
+    match = re.match(
+        r"^([0-9]+(?:\.[0-9]+)?)_(?:alpha_li_steps|zns_track_steps)\.csv$",
+        path.name,
+    )
     return float(match.group(1)) if match else None
 
 
@@ -415,15 +433,56 @@ def discover_thicknesses(args: argparse.Namespace) -> List[float]:
     requested = parse_thickness_values(args.thickness)
     if requested is not None and requested:
         return requested
-    ratio_dir = args.inputs_dir / args.alpha_li_dirname / args.ratio
+
     values = []
-    for path in ratio_dir.glob("*_alpha_li_steps.csv"):
-        t = thickness_from_path(path)
-        if t is not None:
-            values.append(t)
+    checked: List[Path] = []
+    if args.source_input_mode in ("auto", "stageb"):
+        ratio_dir = args.inputs_dir / args.stageb_dirname / args.ratio
+        checked.append(ratio_dir)
+        for path in ratio_dir.glob("*_zns_track_steps.csv"):
+            t = thickness_from_path(path)
+            if t is not None:
+                values.append(t)
+        if values or args.source_input_mode == "stageb":
+            if not values:
+                raise FileNotFoundError(f"No StageB ZnS track files found in {ratio_dir}")
+            return sorted(values)
+
+    if args.source_input_mode in ("auto", "alpha-li"):
+        ratio_dir = args.inputs_dir / args.alpha_li_dirname / args.ratio
+        checked.append(ratio_dir)
+        for path in ratio_dir.glob("*_alpha_li_steps.csv"):
+            t = thickness_from_path(path)
+            if t is not None:
+                values.append(t)
     if not values:
-        raise FileNotFoundError(f"No alpha/Li step files found in {ratio_dir}")
+        raise FileNotFoundError(
+            "No source input files found. Checked: " + ", ".join(str(path) for path in checked)
+        )
     return sorted(values)
+
+
+def source_input_paths(args: argparse.Namespace, label: str) -> Tuple[str, Path, Optional[Path], Optional[Path]]:
+    if args.source_input_mode in ("auto", "stageb"):
+        stageb_root = args.inputs_dir / args.stageb_dirname / args.ratio
+        zns_path = stageb_root / f"{label}_zns_track_steps.csv"
+        anchor_path = stageb_root / f"{label}_capture_anchors.csv"
+        unexpected_path = stageb_root / f"{label}_unexpected_boundary_exits.csv"
+        if zns_path.exists():
+            if not anchor_path.exists():
+                raise FileNotFoundError(f"Missing StageB capture anchors file: {anchor_path}")
+            if not unexpected_path.exists():
+                raise FileNotFoundError(
+                    f"Missing StageB unexpected boundary exits file: {unexpected_path}"
+                )
+            return "stageb", zns_path, anchor_path, unexpected_path
+        if args.source_input_mode == "stageb":
+            raise FileNotFoundError(f"Missing StageB ZnS track file: {zns_path}")
+
+    alpha_path = args.inputs_dir / args.alpha_li_dirname / args.ratio / f"{label}_alpha_li_steps.csv"
+    if alpha_path.exists():
+        return "alpha-li", alpha_path, None, None
+    raise FileNotFoundError(f"Missing source input for thickness {label}: {alpha_path}")
 
 
 def command_arg(value: object, *, executable: bool = False) -> str:
@@ -539,21 +598,25 @@ def main() -> int:
 
     for thickness in thicknesses:
         label = thickness_label(thickness)
-        alpha_path = args.inputs_dir / args.alpha_li_dirname / args.ratio / f"{label}_alpha_li_steps.csv"
         step_sources = source_root / f"{label}_macro_zns_step_sources.csv"
         event_sources = source_root / f"{label}_event_light_sources.csv"
         out_dir = run_root / label
         config_path = out_dir / "run_config.generated.json"
 
-        if not alpha_path.exists():
-            print(f"error: missing alpha/Li input {alpha_path}", file=sys.stderr)
+        try:
+            input_mode, source_input, capture_anchors, unexpected_exits = source_input_paths(
+                args, label
+            )
+        except Exception as exc:
+            print(f"error: {exc}", file=sys.stderr)
             return 2
 
+        generated_sources_this_run = False
         if not args.mc_only and (args.overwrite_sources or not step_sources.exists() or not event_sources.exists()):
             cmd = [
                 sys.executable,
                 args.preprocessor,
-                alpha_path,
+                source_input,
                 "--output-dir",
                 source_root,
                 "--ratio-tag",
@@ -571,7 +634,17 @@ def main() -> int:
                 "--birks-kb-um-per-keV",
                 str(args.birks_kb_um_per_keV),
             ]
+            if input_mode == "stageb":
+                cmd.extend(
+                    [
+                        "--capture-anchors",
+                        capture_anchors,
+                        "--unexpected-boundary-exits",
+                        unexpected_exits,
+                    ]
+                )
             run_command(cmd, args.dry_run)
+            generated_sources_this_run = input_mode == "stageb" and not args.dry_run
 
         if args.preprocess_only:
             continue
@@ -608,6 +681,17 @@ def main() -> int:
                 json.dump(config, f, indent=2)
                 f.write("\n")
         run_command([args.opticalmc, config_path], args.dry_run)
+        if (
+            generated_sources_this_run
+            and not args.keep_generated_sources
+            and not args.dry_run
+        ):
+            for generated_path in (step_sources, event_sources):
+                try:
+                    generated_path.unlink()
+                    print(f"removed_generated_source,{generated_path}", flush=True)
+                except FileNotFoundError:
+                    pass
 
     if not args.preprocess_only and not args.dry_run:
         summary_path = write_thickness_light_summary(run_root, thicknesses)
