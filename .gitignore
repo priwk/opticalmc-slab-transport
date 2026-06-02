@@ -18,8 +18,7 @@ venv/
 # Generated simulation data and plots
 outputs/
 analysis_results/
-inputs/generated_sources/
-inputs/stageB/
+inputs/
 
 # Local editor and OS files
 .idea/

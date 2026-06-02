@@ -1,7 +1,0 @@
-sample_id,ratio_tag,thickness_um,wavelength_min_nm,wavelength_max_nm,wavelength_step_nm,n_wavelengths,invalid_iad_rows,MR_at_450_nm,MT_at_450_nm,MR_at_511_nm,MT_at_511_nm,correction_method,iad_input_csv,source_R_file,source_T_file
-X-X-30,X-X,30,350.0,650.0,0.5,601,59,0.785,0.094,0.759,0.109,sample_minus_glass_same_wavelength,inputs/iad_inputs/511/per_sample/X-X-30_iad_input.csv,inputs/511/X-X-30-R-D.txt,inputs/511/X-X-30-T-D.txt
-X-X-70,X-X,70,350.0,650.0,0.5,601,38,0.781,0.148,0.755,0.171,sample_minus_glass_same_wavelength,inputs/iad_inputs/511/per_sample/X-X-70_iad_input.csv,inputs/511/X-X-70-R-D.txt,inputs/511/X-X-70-T-D.txt
-X-X-100,X-X,100,350.0,650.0,0.5,601,85,0.851,0.052,0.846,0.067,sample_minus_glass_same_wavelength,inputs/iad_inputs/511/per_sample/X-X-100_iad_input.csv,inputs/511/X-X-100-R-D.txt,inputs/511/X-X-100-T-D.txt
-X-X-110,X-X,110,350.0,650.0,0.5,601,59,0.795,0.094,0.78,0.109,sample_minus_glass_same_wavelength,inputs/iad_inputs/511/per_sample/X-X-110_iad_input.csv,inputs/511/X-X-110-R-D.txt,inputs/511/X-X-110-T-D.txt
-X-X-140,X-X,140,350.0,650.0,0.5,601,95,0.893,0.041,0.89,0.056,sample_minus_glass_same_wavelength,inputs/iad_inputs/511/per_sample/X-X-140_iad_input.csv,inputs/511/X-X-140-R-D.txt,inputs/511/X-X-140-T-D.txt
-X-X-170,X-X,170,350.0,650.0,0.5,601,97,0.895,0.024,0.901,0.038,sample_minus_glass_same_wavelength,inputs/iad_inputs/511/per_sample/X-X-170_iad_input.csv,inputs/511/X-X-170-R-D.txt,inputs/511/X-X-170-T-D.txt
