@@ -1,0 +1,45 @@
+# Ignore binaries
+ad
+iad
+ad.exe
+iad.exe
+src/cone_test
+src/layer_test
+src/mc_test
+src/oblique_test
+src/mc_lost
+src/ad
+src/iad
+
+# ignore generated docs
+docs/iad_src.pdf
+docs/ad_src.pdf
+docs/manual.*
+docs/jupyter
+docs/*graffle
+docs/*png
+
+# ignore archives
+archives/*
+
+# macOS cruft
+.DS_Store
+.#*
+
+# Ignore (generated) test files,
+test/.ipynb_checkpoints/*
+test/.jupyter/*
+test/*.txt
+test/*.svg
+test/*.ipynb
+test/*.grid
+
+# Ignore generated .o and .c and .h and .tex and .log and ... files
+src/iad_type.c
+src/*.o
+src/ad.*
+src/iad.*
+src/lib*
+libiad.dylib
+libiad.so
+libiad.dll

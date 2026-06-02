@@ -1,0 +1,32 @@
+# verify the version number in the Makefile
+
+# update CHANGELOG.rst as needed  `git log v3.14.5..HEAD --pretty=format:"%s"`
+    git commit -m 'update recent changes' CHANGELOG.rst
+    git push
+
+# final sanity check
+    make realclean
+    make
+    make test            # visually check for failures
+    make longtest        # visually check for failures
+    make wintest         # visually check for failures
+
+# verify first page of source listing is still correct
+    open docs/ad_src.pdf
+    open docs/iad_src.pdf
+
+# make the unix and windows distributions
+    make realclean
+    make dists
+    git commit -a -m ' version'
+
+# create tag for release on github
+    git tag v3.14.6
+    git push origin v3.14.6
+
+# create a release on github and upload latest to omlc.org
+#
+# do not forget to attach archives/iad-win-v3.14.6.zip to release!
+    open https://github.com/scottprahl/iad/releases/
+    open .
+    sftp -b sftp_commands.txt

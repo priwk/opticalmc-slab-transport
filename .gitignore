@@ -1,0 +1,28 @@
+# Build outputs and local binaries
+build/
+cmake-build-*/
+OpticalMC
+OpticalMC.exe
+*.o
+*.obj
+*.dll
+*.dylib
+*.so
+
+# Python cache and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Generated simulation data and plots
+outputs/
+analysis_results/
+inputs/generated_sources/
+inputs/stageB/
+
+# Local editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

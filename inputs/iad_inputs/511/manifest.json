@@ -1,0 +1,11 @@
+{
+  "dataset_id": "511",
+  "description": "Glass-corrected diffuse reflectance/transmittance spectra prepared as IAD input data.",
+  "raw_dir": "inputs/511",
+  "output_dir": "inputs/iad_inputs/511",
+  "sample_count": 6,
+  "measurement_rows": 3606,
+  "reference_rows": 601,
+  "invalid_iad_rows_total": 433,
+  "correction_method": "MR_percent = sample_R_percent - Glass_R_percent; MT_percent = sample_T_percent - Glass_T_percent; MR/MT are corrected_percent / 100."
+}

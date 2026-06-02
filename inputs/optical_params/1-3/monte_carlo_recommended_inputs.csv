@@ -1,0 +1,2 @@
+ratio,wavelength_nm,param_model,recommended_mu_a_per_um,recommended_mu_s_per_um,recommended_g1,recommended_g2,recommended_mu_s_prime_per_um,phase_function_file,recommended_scattering_model,notes
+1-3,450.0,GO_RVE,0.00040605579999999995,0.5108900000000001,0.3970278,0.1404278,0.3080744,phase_function_mean_by_ratio.csv,tabulated_phase_function,Use the tabulated phase function when the downstream MC supports it; otherwise HG with g1 is the fallback approximation.

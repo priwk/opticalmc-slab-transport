@@ -1,0 +1,23 @@
+{
+  "ratio": "1-3",
+  "wavelength_nm": 450.0,
+  "param_model": "GO_RVE",
+  "recommended_inputs": {
+    "mu_a_per_um": 0.00040605579999999995,
+    "mu_s_per_um": 0.5108900000000001,
+    "g1": 0.3970278,
+    "g2": 0.1404278,
+    "mu_s_prime_per_um": 0.3080744,
+    "phase_function_file": "phase_function_mean_by_ratio.csv",
+    "scattering_model": "tabulated_phase_function"
+  },
+  "fallback_inputs": {
+    "scattering_model": "henyey_greenstein",
+    "g1": 0.3970278
+  },
+  "notes": [
+    "Primary statistics are derived from particle encounter without threshold.",
+    "mu_a_per_um is the expected absorption estimate from phase path lengths and ABSLENGTH.",
+    "Prefer the tabulated phase function over HG when the downstream Monte Carlo supports it."
+  ]
+}

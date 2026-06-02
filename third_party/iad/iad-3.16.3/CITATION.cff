@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+title: 'iad: C code for Forward and Inverse Radiative Transport using the Adding-Doubling method'
+message: 'Code is citable as below.  Article is  Prahl et al., Applied Optics, 32, 559-568, 1993.'
+
+authors:
+  - given-names: Scott
+    family-names: Prahl
+    orcid: 'https://orcid.org/0000-0003-1468-6851'
+doi: 10.5281/zenodo.102147394
+url: 'https://doi.org/10.5281/zenodo.102147394'
