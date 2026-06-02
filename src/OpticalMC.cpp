@@ -82,6 +82,9 @@ struct SourceStep {
     Vec3 p0;
     Vec3 p1;
     double n_photon_step = 0.0;
+    bool has_psf_anchor = false;
+    double psf_anchor_x = 0.0;
+    double psf_anchor_y = 0.0;
 };
 
 struct EventSource {
@@ -89,6 +92,9 @@ struct EventSource {
     std::string eventID;
     double depth_um = 0.0;
     double total_n_photon = 0.0;
+    bool has_psf_anchor = false;
+    double psf_anchor_x = 0.0;
+    double psf_anchor_y = 0.0;
 };
 
 struct PhotonRecord {
@@ -233,6 +239,20 @@ double toDouble(const std::unordered_map<std::string, std::string>& row, const s
         return default_value;
     }
     return std::stod(it->second);
+}
+
+bool optionalDouble(const std::unordered_map<std::string, std::string>& row,
+                    const std::string& key, double& value) {
+    const auto it = row.find(key);
+    if (it == row.end() || trim(it->second).empty()) {
+        return false;
+    }
+    try {
+        value = std::stod(it->second);
+    } catch (...) {
+        return false;
+    }
+    return std::isfinite(value);
 }
 
 int toInt(const std::unordered_map<std::string, std::string>& row, const std::string& key,
@@ -481,6 +501,14 @@ std::vector<SourceStep> readSources(const std::string& path) {
         s.p1 = {toDouble(row, "src_x1_um"), toDouble(row, "src_y1_um"),
                 toDouble(row, "src_z1_um")};
         s.n_photon_step = toDouble(row, "n_photon_step");
+        double anchor_x = 0.0;
+        double anchor_y = 0.0;
+        if (optionalDouble(row, "macro_anchor_x_um", anchor_x) &&
+            optionalDouble(row, "macro_anchor_y_um", anchor_y)) {
+            s.has_psf_anchor = true;
+            s.psf_anchor_x = anchor_x;
+            s.psf_anchor_y = anchor_y;
+        }
         if (s.n_photon_step > 0.0) {
             sources.push_back(std::move(s));
         }
@@ -496,9 +524,40 @@ std::vector<EventSource> readEvents(const std::string& path) {
         e.eventID = toString(row, "eventID");
         e.depth_um = toDouble(row, "depth_um", 0.0);
         e.total_n_photon = toDouble(row, "total_n_photon", 0.0);
+        double anchor_x = 0.0;
+        double anchor_y = 0.0;
+        if (optionalDouble(row, "macro_anchor_x_um", anchor_x) &&
+            optionalDouble(row, "macro_anchor_y_um", anchor_y)) {
+            e.has_psf_anchor = true;
+            e.psf_anchor_x = anchor_x;
+            e.psf_anchor_y = anchor_y;
+        }
         events.push_back(std::move(e));
     }
     return events;
+}
+
+void applyEventAnchors(std::vector<SourceStep>& sources,
+                       const std::vector<EventSource>& events) {
+    std::unordered_map<std::string, const EventSource*> by_uid;
+    by_uid.reserve(events.size());
+    for (const auto& event : events) {
+        if (event.has_psf_anchor) {
+            by_uid[event.source_event_uid] = &event;
+        }
+    }
+    for (auto& source : sources) {
+        if (source.has_psf_anchor) {
+            continue;
+        }
+        const auto it = by_uid.find(source.source_event_uid);
+        if (it == by_uid.end()) {
+            continue;
+        }
+        source.has_psf_anchor = true;
+        source.psf_anchor_x = it->second->psf_anchor_x;
+        source.psf_anchor_y = it->second->psf_anchor_y;
+    }
 }
 
 OpticalProperties selectOpticalProperties(const std::string& path, const RunConfig& cfg,
@@ -665,23 +724,34 @@ double binCenter(int index, double range, double bin_size) {
     return -range + (static_cast<double>(index) + 0.5) * bin_size;
 }
 
+double psfAnchorX(const SourceStep& source) {
+    return source.has_psf_anchor ? source.psf_anchor_x : 0.5 * (source.p0.x + source.p1.x);
+}
+
+double psfAnchorY(const SourceStep& source) {
+    return source.has_psf_anchor ? source.psf_anchor_y : 0.5 * (source.p0.y + source.p1.y);
+}
+
 void recordDetected(Accumulators& acc, const SourceStep& source, int source_index,
                     const PhotonRecord& rec, int n_bins, const RunConfig& cfg) {
+    const double dx = rec.x - psfAnchorX(source);
+    const double dy = rec.y - psfAnchorY(source);
+
     acc.detected_weight += rec.weight;
-    acc.detected_sum_x += rec.weight * rec.x;
-    acc.detected_sum_y += rec.weight * rec.y;
-    acc.detected_sum_x2 += rec.weight * rec.x * rec.x;
-    acc.detected_sum_y2 += rec.weight * rec.y * rec.y;
+    acc.detected_sum_x += rec.weight * dx;
+    acc.detected_sum_y += rec.weight * dy;
+    acc.detected_sum_x2 += rec.weight * dx * dx;
+    acc.detected_sum_y2 += rec.weight * dy * dy;
 
     auto& ev = acc.event_stats[source.source_event_uid];
     ev.detected_weight += rec.weight;
-    ev.sum_x += rec.weight * rec.x;
-    ev.sum_y += rec.weight * rec.y;
-    ev.sum_x2 += rec.weight * rec.x * rec.x;
-    ev.sum_y2 += rec.weight * rec.y * rec.y;
+    ev.sum_x += rec.weight * dx;
+    ev.sum_y += rec.weight * dy;
+    ev.sum_x2 += rec.weight * dx * dx;
+    ev.sum_y2 += rec.weight * dy * dy;
 
-    const int bx = binIndex(rec.x, cfg.psf_range_um, cfg.psf_bin_size_um);
-    const int by = binIndex(rec.y, cfg.psf_range_um, cfg.psf_bin_size_um);
+    const int bx = binIndex(dx, cfg.psf_range_um, cfg.psf_bin_size_um);
+    const int by = binIndex(dy, cfg.psf_range_um, cfg.psf_bin_size_um);
     if (bx >= 0) {
         acc.lsf_x[bx] += rec.weight;
     }
@@ -933,6 +1003,12 @@ double fwhmFromLsf(const std::vector<double>& lsf, double range, double bin_size
     while (right + 1 < static_cast<int>(lsf.size()) && lsf[right] >= half) {
         ++right;
     }
+    const bool left_clipped = (left == 0 && lsf[left] >= half);
+    const bool right_clipped =
+        (right + 1 >= static_cast<int>(lsf.size()) && lsf[right] >= half);
+    if (left_clipped || right_clipped) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
 
     auto interp = [&](int i0, int i1) {
         const double x0 = binCenter(i0, range, bin_size);
@@ -1182,6 +1258,7 @@ int main(int argc, char** argv) {
 
         auto sources = readSources(cfg.source_steps_csv);
         auto events = readEvents(cfg.event_sources_csv);
+        applyEventAnchors(sources, events);
         auto op = selectOpticalProperties(cfg.optical_properties_csv, cfg, sources);
         if (cfg.ratio_tag.empty()) {
             cfg.ratio_tag = op.ratio_tag;

@@ -101,8 +101,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--incident-events",
         type=float,
-        default=100000.0,
-        help="入射 neutron history 数，用于 per-incident 出光量归一。默认 100000。",
+        default=1000000.0,
+        help="入射 neutron history 数，用于 per-incident 出光量归一。默认 1000000。",
     )
     parser.add_argument(
         "--quench-kb",
