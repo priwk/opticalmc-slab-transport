@@ -31,8 +31,6 @@ STEP_FIELDS = [
     "surface_mode",
     "capture_x_um",
     "capture_y_um",
-    "corr_x_um",
-    "corr_y_um",
     "depth_um",
     "macro_anchor_x_um",
     "macro_anchor_y_um",
@@ -76,8 +74,6 @@ EVENT_FIELDS = [
     "surface_mode",
     "capture_x_um",
     "capture_y_um",
-    "corr_x_um",
-    "corr_y_um",
     "depth_um",
     "macro_anchor_x_um",
     "macro_anchor_y_um",
@@ -142,12 +138,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--xy-anchor-mode",
-        choices=("capture", "corr"),
+        choices=("capture",),
         default="capture",
-        help=(
-            "Use capture_x/y_um as the absolute capture-position anchor, or corr_x/y_um "
-            "(capture_x/y_um - source_x/y_um) as the source-relative transverse anchor."
-        ),
+        help="Use capture_x/y_um as the absolute capture-position anchor.",
     )
     parser.add_argument(
         "--yield-zns-per-MeV",
@@ -285,8 +278,6 @@ def first_event_record(
         "surface_mode": row.get("surface_mode", ""),
         "capture_x_um": row.get("capture_x_um", ""),
         "capture_y_um": row.get("capture_y_um", ""),
-        "corr_x_um": row.get("corr_x_um", ""),
-        "corr_y_um": row.get("corr_y_um", ""),
         "depth_um": row.get("depth_um", ""),
         "macro_anchor_x_um": anchor_x,
         "macro_anchor_y_um": anchor_y,
@@ -413,6 +404,8 @@ def make_stageb_outputs(args: argparse.Namespace) -> Tuple[Path, Path, int, int]
             "physical_event_uid",
             "source_event_uid",
             "eventID",
+            "capture_x_um",
+            "capture_y_um",
             "depth_um",
             "local_capture_x_um",
             "local_capture_y_um",
@@ -461,12 +454,8 @@ def make_stageb_outputs(args: argparse.Namespace) -> Tuple[Path, Path, int, int]
             partially_reweighted += 1
         scale = total_weight / valid_weight if total_weight > 0.0 else 1.0
         anchor = anchors[good_sources[0]]
-        macro_anchor_x = parse_float(
-            anchor, "capture_x_um" if args.xy_anchor_mode == "capture" else "corr_x_um"
-        )
-        macro_anchor_y = parse_float(
-            anchor, "capture_y_um" if args.xy_anchor_mode == "capture" else "corr_y_um"
-        )
+        macro_anchor_x = parse_float(anchor, "capture_x_um")
+        macro_anchor_y = parse_float(anchor, "capture_y_um")
         record = first_event_record(
             anchor,
             ratio_tag,
@@ -534,12 +523,8 @@ def make_stageb_outputs(args: argparse.Namespace) -> Tuple[Path, Path, int, int]
                     skipped_nonpositive += 1
                     continue
 
-                macro_anchor_x = parse_float(
-                    anchor, "capture_x_um" if args.xy_anchor_mode == "capture" else "corr_x_um"
-                )
-                macro_anchor_y = parse_float(
-                    anchor, "capture_y_um" if args.xy_anchor_mode == "capture" else "corr_y_um"
-                )
+                macro_anchor_x = parse_float(anchor, "capture_x_um")
+                macro_anchor_y = parse_float(anchor, "capture_y_um")
                 macro_anchor_z = parse_float(anchor, "depth_um")
                 local_capture_x = parse_float(anchor, "local_capture_x_um")
                 local_capture_y = parse_float(anchor, "local_capture_y_um")
@@ -606,8 +591,6 @@ def make_stageb_outputs(args: argparse.Namespace) -> Tuple[Path, Path, int, int]
                         "surface_mode": anchor.get("surface_mode", ""),
                         "capture_x_um": anchor.get("capture_x_um", ""),
                         "capture_y_um": anchor.get("capture_y_um", ""),
-                        "corr_x_um": anchor.get("corr_x_um", ""),
-                        "corr_y_um": anchor.get("corr_y_um", ""),
                         "depth_um": anchor.get("depth_um", ""),
                         "macro_anchor_x_um": macro_anchor_x,
                         "macro_anchor_y_um": macro_anchor_y,
@@ -702,6 +685,8 @@ def make_alpha_outputs(args: argparse.Namespace) -> Tuple[Path, Path, int, int]:
                 "z_post_um",
                 "edep_keV",
                 "step_len_um",
+                "capture_x_um",
+                "capture_y_um",
                 "depth_um",
                 "local_capture_x_um",
                 "local_capture_y_um",
@@ -719,12 +704,8 @@ def make_alpha_outputs(args: argparse.Namespace) -> Tuple[Path, Path, int, int]:
             row_count += 1
             try:
                 column_thickness_values.add(round(parse_float(row, "thickness_um"), 9))
-                macro_anchor_x = parse_float(
-                    row, "capture_x_um" if args.xy_anchor_mode == "capture" else "corr_x_um"
-                )
-                macro_anchor_y = parse_float(
-                    row, "capture_y_um" if args.xy_anchor_mode == "capture" else "corr_y_um"
-                )
+                macro_anchor_x = parse_float(row, "capture_x_um")
+                macro_anchor_y = parse_float(row, "capture_y_um")
                 uid = event_uid(ratio_tag, thickness_um, row.get("eventID", ""))
                 if uid not in events:
                     events[uid] = first_event_record(
@@ -797,8 +778,6 @@ def make_alpha_outputs(args: argparse.Namespace) -> Tuple[Path, Path, int, int]:
                         "surface_mode": row.get("surface_mode", ""),
                         "capture_x_um": row.get("capture_x_um", ""),
                         "capture_y_um": row.get("capture_y_um", ""),
-                        "corr_x_um": row.get("corr_x_um", ""),
-                        "corr_y_um": row.get("corr_y_um", ""),
                         "depth_um": row.get("depth_um", ""),
                         "macro_anchor_x_um": macro_anchor_x,
                         "macro_anchor_y_um": macro_anchor_y,

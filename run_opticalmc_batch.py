@@ -66,7 +66,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mu-a-scale", type=float, default=1.0, help="Scale mu_a after reading merged optical params; useful for sensitivity checks.")
     parser.add_argument("--mu-s-scale", type=float, default=1.0, help="Scale selected mu_s after reading merged optical params; useful for sensitivity checks.")
     parser.add_argument("--transparent-optics", action="store_true", help="Debug mode: set mu_a=mu_s=g=0 in generated optical_properties.csv.")
-    parser.add_argument("--xy-anchor-mode", choices=("capture", "corr"), default="corr")
+    parser.add_argument(
+        "--xy-anchor-mode",
+        choices=("capture",),
+        default="capture",
+        help="X/Y anchor mode for generated sources. Only capture_x/y_um is supported.",
+    )
     parser.add_argument("--yield-zns-per-MeV", type=float, default=60000.0)
     parser.add_argument("--wavelength-nm", type=float, default=450.0)
     parser.add_argument("--quench-model", choices=("none", "birks"), default="none")

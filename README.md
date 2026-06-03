@@ -110,17 +110,13 @@ normal  samples_per_step = 32   适合日常批量
 fine    samples_per_step = 128  适合最终结果，耗时更长
 ```
 
-默认坐标模式是：
+坐标模式固定为：
 
 ```text
---coords source-relative
+--coords global
 ```
 
-这会使用 `corr_x_um/corr_y_um`，适合 PSF、LSF、MTF。如果要保留探测屏全局坐标，用：
-
-```powershell
-python .\run.py 1-2 30 --coords global
-```
+这会使用 `capture_x_um/capture_y_um` 保留探测屏全局坐标。`corr_x_um/corr_y_um` 不再使用，后续输入文件也不需要提供这些列。
 
 默认读出后表面：
 
@@ -195,7 +191,7 @@ python .\run.py 1-2 30 40 50 --incident-events 200000
 `run.py` 只是把常用参数包装得更简单。需要更细控制时，可以直接用底层批处理脚本：
 
 ```powershell
-python .\run_opticalmc_batch.py --ratio 1-2 --thickness 30,40,50,100 --samples-per-step 32 --num-threads 8 --xy-anchor-mode corr --readout-surface back
+python .\run_opticalmc_batch.py --ratio 1-2 --thickness 30,40,50,100 --samples-per-step 32 --num-threads 8 --xy-anchor-mode capture --readout-surface back
 ```
 
 ## 配比和厚度
@@ -314,33 +310,15 @@ python .\run.py 1-2 30 --preset fine
 n_photon_step / samples_per_step
 ```
 
-## x/y 锚点模式
+## x/y 锚点
 
-预处理时可选：
+预处理固定使用：
 
 ```powershell
---xy-anchor-mode corr
 --xy-anchor-mode capture
 ```
 
-推荐：
-
-```powershell
---xy-anchor-mode corr
-```
-
-`corr` 会用 `corr_x_um/corr_y_um` 作为宏观 x/y 锚点。这里的 `corr` 不是任意校正后的绝对坐标，而是原 Geant4 项目中定义的“俘获点相对源点的横向偏移”：
-
-```text
-corr_x_um = capture_x_um - source_x_um
-corr_y_um = capture_y_um - source_y_um
-```
-
-因此 `corr` 模式得到的是以入射源点为参考原点的横向坐标，适合 PSF、LSF、MTF 分析：它保留“中子从源点出发后，在屏内哪里俘获并发光”的相对位移。
-
-`capture` 会用 `capture_x_um/capture_y_um` 作为宏观 x/y 锚点，适合保留探测屏全局坐标中的真实俘获位置分布。
-
-由于当前 slab 的 x/y 边界默认无限，`corr` 和 `capture` 对总出光效率影响通常不大，主要影响光斑、PSF、LSF、MTF 这类空间分布结果。
+预处理会用 `capture_x_um/capture_y_um` 作为宏观 x/y 锚点，保留探测屏全局坐标中的真实俘获位置分布。`corr_x_um/corr_y_um` 已废弃，代码不会读取这些列。
 
 ## 淬灭接口
 
@@ -439,7 +417,7 @@ python .\run.py 1-2 30 40 50 70 100 --preset quick --mu-a-scale 0.1 --mu-s-scale
 一般不需要手动跑，但可以这样用：
 
 ```powershell
-python .\make_macro_zns_sources.py .\inputs\alpha_li_steps\1-2\30_alpha_li_steps.csv --xy-anchor-mode corr
+python .\make_macro_zns_sources.py .\inputs\alpha_li_steps\1-2\30_alpha_li_steps.csv --xy-anchor-mode capture
 ```
 
 默认输出到：

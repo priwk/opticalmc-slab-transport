@@ -56,9 +56,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--coords",
-        choices=("source-relative", "global"),
-        default="source-relative",
-        help="source-relative 使用 corr_x/y，适合 PSF/LSF；global 使用 capture_x/y，保留屏幕全局坐标。",
+        choices=("global",),
+        default="global",
+        help="坐标模式。仅支持 global，使用 capture_x/y 保留屏幕全局坐标。",
     )
     parser.add_argument(
         "--readout",
@@ -247,7 +247,7 @@ def main() -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    xy_anchor_mode = "corr" if args.coords == "source-relative" else "capture"
+    xy_anchor_mode = "capture"
     cmd: List[str] = [
         sys.executable,
         str(REPO_ROOT / "run_opticalmc_batch.py"),
@@ -322,7 +322,7 @@ def main() -> int:
         flush=True,
     )
     print(f"预设: {args.preset} ({preset['description']})", flush=True)
-    print(f"坐标: {'corr/source-relative' if xy_anchor_mode == 'corr' else 'capture/global'}", flush=True)
+    print("坐标: capture/global", flush=True)
     print(f"读出面: {args.readout}", flush=True)
     print(f"光学参数: {args.optical_component}", flush=True)
     print("执行命令:", flush=True)
