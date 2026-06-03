@@ -135,23 +135,28 @@ python .\run.py 1-2 30 --readout front
 python .\run.py 1-2 30 --readout both
 ```
 
-## 前表面铝板反射
+## 表面 Fresnel 反射
 
-默认前表面仍是旧模型：光子到达 `front` 后逃逸。如果实验中前表面贴有铝板，可以选择两种反射概率模型。
+默认开启两个表面模型：
 
-物理模型用铝的复折射率和入射角计算 Fresnel 反射率：
-
-```powershell
-python .\run.py 1-2 30 40 50 --readout back --front-reflection-model aluminum_fresnel --front-reflection-mode specular
+```text
+front: n_eff -> Al(n + ik) 的 Fresnel 反射，镜面反射回闪烁体
+back : n_eff -> air 的 Fresnel 反射，只有透射出后表面的光子才计入 detected/back_escape
 ```
 
-默认铝参数是 `front_aluminum_n = 0.65`、`front_aluminum_k = 5.3`，可按发光波长查表后覆盖：
+默认前表面铝参数是 `front_aluminum_n = 0.65`、`front_aluminum_k = 5.3`，可按发光波长查表后覆盖：
 
 ```powershell
-python .\run.py 1-2 30 --front-reflection-model aluminum_fresnel --front-reflection-mode specular --front-aluminum-n 0.65 --front-aluminum-k 5.3
+python .\run.py 1-2 30 --front-aluminum-n 0.65 --front-aluminum-k 5.3
 ```
 
-有效模型保留常数反射率，用于灵敏度检查或独立实验标定：
+后表面默认空气折射率是 `back_air_n = 1.000293`，可覆盖：
+
+```powershell
+python .\run.py 1-2 30 --back-air-n 1.000293
+```
+
+有效前表面模型保留常数反射率，用于灵敏度检查或独立实验标定：
 
 ```powershell
 python .\run.py 1-2 30 40 50 --readout back --front-reflection-model effective --front-reflectance 0.85 --front-reflection-mode specular
@@ -166,6 +171,12 @@ diffuse   漫反射，反射时按 Lambertian 半球重新抽样方向
 ```
 
 启用 `specular` 或 `diffuse` 后，光子打到前表面会按所选模型给出的概率反射回闪烁体；未反射的部分按铝板吸收计入 `absorbed_weight`，不再计入 `front_escape_weight`。
+
+如果要回到旧边界行为，可显式关闭：
+
+```powershell
+python .\run.py 1-2 30 --front-reflection-mode none --back-reflection-model none
+```
 
 默认入射 neutron history 数是：
 
@@ -393,7 +404,7 @@ rho_ZnS = 4.09 g/cm3
 python .\run_opticalmc_batch.py --ratio 1-2 --n-bn 1.9 --n-zns 2.4 --rho-bn 2.1 --rho-zns 4.09
 ```
 
-说明：当前 OpticalMC 内部随机游走主要受 `mu_a`、`mu_s` 和散射相函数控制。默认散射相函数是 HG(g)；如果 `optical_properties.csv` 含有 `phase_function_csv`，或运行时传入 `--phase-function-csv`，则按表格中的 `mu = cos(theta)` 概率质量采样。程序还可选用 `front_reflection_model`/`front_reflection_mode` 模拟前表面铝板反射。`n_eff` 在 `front_reflection_model = aluminum_fresnel` 时用于计算前表面 `n_eff -> n_Al + i k_Al` 的 Fresnel 反射率；其他出界表面仍未加入 Fresnel 折反射。
+说明：当前 OpticalMC 内部随机游走主要受 `mu_a`、`mu_s` 和散射相函数控制。默认散射相函数是 HG(g)；如果 `optical_properties.csv` 含有 `phase_function_csv`，或运行时传入 `--phase-function-csv`，则按表格中的 `mu = cos(theta)` 概率质量采样。程序默认用 `front_reflection_model`/`front_reflection_mode` 模拟前表面铝板反射，并用 `back_reflection_model = air_fresnel` 模拟后表面 `n_eff -> air` 的 Fresnel 反射；`detected` 表示实际透射出所选读出表面的光子。
 
 ## 光学参数敏感性检查
 
@@ -567,9 +578,12 @@ outputs/1-2/figures/thickness_light_curve.png
 outputs/1-2/figures/thickness_light_curve.pdf
 outputs/1-2/figures/thickness_detection_efficiency.png
 outputs/1-2/figures/thickness_detection_efficiency.pdf
+outputs/1-2/figures/thickness_mtf_thresholds.png
+outputs/1-2/figures/thickness_mtf_thresholds.pdf
 outputs/1-2/figures/paper_thickness_summary.png
 outputs/1-2/figures/paper_thickness_summary.pdf
 outputs/1-2/figures/thickness_plot_data.csv
+outputs/1-2/figures/thickness_mtf_metrics.csv
 ```
 
 其中最适合论文初稿的是：

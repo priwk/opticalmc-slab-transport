@@ -11,7 +11,10 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
+
+from analysis.common import crossing_frequency, load_lsf, normalized_mtf_from_lsf
 
 
 def parse_args() -> argparse.Namespace:
@@ -120,10 +123,85 @@ def save_all(fig: plt.Figure, out_dir: Path, stem: str, formats: List[str], dpi:
     return paths
 
 
+def thickness_label(value: float) -> str:
+    return f"{value:.12g}"
+
+
 def style_axes(ax: plt.Axes) -> None:
     ax.grid(True, color="#d9d9d9", linewidth=0.7, alpha=0.8)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
+
+
+def collect_mtf_metrics(df: pd.DataFrame, summary_path: Path) -> pd.DataFrame:
+    run_root = summary_path.parent
+    rows = []
+    for row in df.itertuples(index=False):
+        thickness = float(getattr(row, "thickness_um"))
+        thickness_dir = run_root / thickness_label(thickness)
+        for axis in ("x", "y"):
+            lsf_path = thickness_dir / f"lsf_{axis}.csv"
+            if not lsf_path.exists():
+                continue
+            lsf = load_lsf(lsf_path)
+            mtf = normalized_mtf_from_lsf(lsf)
+            rows.append(
+                {
+                    "thickness_um": thickness,
+                    "axis": axis,
+                    "mtf50_lp_per_mm": crossing_frequency(mtf, 0.5),
+                    "mtf20_lp_per_mm": crossing_frequency(mtf, 0.2),
+                    "mtf10_lp_per_mm": crossing_frequency(mtf, 0.1),
+                }
+            )
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "thickness_um",
+                "axis",
+                "mtf50_lp_per_mm",
+                "mtf20_lp_per_mm",
+                "mtf10_lp_per_mm",
+            ]
+        )
+    return pd.DataFrame(rows).sort_values(["thickness_um", "axis"]).reset_index(drop=True)
+
+
+def plot_mtf_thresholds(
+    mtf_metrics: pd.DataFrame, out_dir: Path, formats: List[str], dpi: int, title: str
+) -> List[Path]:
+    if mtf_metrics.empty:
+        return []
+    grouped = (
+        mtf_metrics.groupby("thickness_um", as_index=False)[
+            ["mtf10_lp_per_mm", "mtf20_lp_per_mm", "mtf50_lp_per_mm"]
+        ]
+        .mean(numeric_only=True)
+        .sort_values("thickness_um")
+    )
+    if grouped.empty:
+        return []
+    fig, ax = plt.subplots(figsize=(6.2, 4.2))
+    for col, label, marker in [
+        ("mtf50_lp_per_mm", "MTF50", "o"),
+        ("mtf20_lp_per_mm", "MTF20", "s"),
+        ("mtf10_lp_per_mm", "MTF10", "^"),
+    ]:
+        values = grouped[col].to_numpy(dtype=float)
+        if np.isfinite(values).any():
+            ax.plot(
+                grouped["thickness_um"],
+                values,
+                marker=marker,
+                linewidth=1.8,
+                label=label,
+            )
+    ax.set_xlabel("Thickness (um)")
+    ax.set_ylabel("Spatial frequency (lp/mm)")
+    ax.set_title(f"{title}: MTF thresholds")
+    ax.legend()
+    style_axes(ax)
+    return save_all(fig, out_dir, "thickness_mtf_thresholds", formats, dpi)
 
 
 def plot_light_curve(df: pd.DataFrame, out_dir: Path, formats: List[str], dpi: int, title: str) -> List[Path]:
@@ -278,6 +356,13 @@ def main() -> int:
     paths += plot_light_curve(df, out_dir, args.formats, args.dpi, title)
     paths += plot_efficiency_curve(df, out_dir, args.formats, args.dpi, title)
     paths += plot_paper_summary(df, out_dir, args.formats, args.dpi, title)
+    mtf_metrics = collect_mtf_metrics(df, args.summary)
+    if not mtf_metrics.empty:
+        mtf_path = out_dir / "thickness_mtf_metrics.csv"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        mtf_metrics.to_csv(mtf_path, index=False)
+        paths.append(mtf_path)
+        paths += plot_mtf_thresholds(mtf_metrics, out_dir, args.formats, args.dpi, title)
     paths.append(write_analysis_csv(df, out_dir))
 
     for path in paths:

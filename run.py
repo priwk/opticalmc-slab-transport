@@ -69,7 +69,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--front-reflection-model",
         choices=("effective", "aluminum_fresnel"),
-        default="effective",
+        default="aluminum_fresnel",
         help="前表面反射概率模型：effective 使用常数反射率；aluminum_fresnel 用 n_eff 到铝 n+ik 的角度相关 Fresnel 反射率。",
     )
     parser.add_argument(
@@ -81,11 +81,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--front-reflection-mode",
         choices=("none", "specular", "diffuse"),
-        default="none",
+        default="specular",
         help="前表面边界：none 为旧的逃逸边界；specular/diffuse 用于模拟铝板反射。",
     )
     parser.add_argument("--front-aluminum-n", type=float, default=0.65, help="aluminum_fresnel 使用的铝复折射率实部。")
     parser.add_argument("--front-aluminum-k", type=float, default=5.3, help="aluminum_fresnel 使用的铝消光系数。")
+    parser.add_argument(
+        "--back-reflection-model",
+        choices=("none", "air_fresnel"),
+        default="air_fresnel",
+        help="后表面出屏边界：air_fresnel 用 n_eff 到空气的 Fresnel 反射率；none 为旧的直接出界。",
+    )
+    parser.add_argument("--back-air-n", type=float, default=1.000293, help="后表面外侧空气折射率。")
     parser.add_argument(
         "--threads",
         type=int,
@@ -270,6 +277,10 @@ def main() -> int:
         str(args.front_aluminum_n),
         "--front-aluminum-k",
         str(args.front_aluminum_k),
+        "--back-reflection-model",
+        args.back_reflection_model,
+        "--back-air-n",
+        str(args.back_air_n),
         "--yield-zns-per-MeV",
         str(args.yield_zns_per_MeV),
         "--incident-event-count",

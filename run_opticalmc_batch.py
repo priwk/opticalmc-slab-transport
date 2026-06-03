@@ -75,7 +75,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--front-reflection-model",
         choices=("effective", "aluminum_fresnel"),
-        default="effective",
+        default="aluminum_fresnel",
         help="Front reflection probability model: effective uses front-reflectance; aluminum_fresnel computes angle-dependent Fresnel reflection from n_eff to aluminum n+ik.",
     )
     parser.add_argument(
@@ -87,11 +87,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--front-reflection-mode",
         choices=("none", "specular", "diffuse"),
-        default="none",
+        default="specular",
         help="Front boundary behavior: none keeps the old escape boundary; specular/diffuse model a reflecting aluminum plate.",
     )
     parser.add_argument("--front-aluminum-n", type=float, default=0.65, help="Real part of aluminum refractive index for aluminum_fresnel.")
     parser.add_argument("--front-aluminum-k", type=float, default=5.3, help="Extinction coefficient of aluminum for aluminum_fresnel.")
+    parser.add_argument(
+        "--back-reflection-model",
+        choices=("none", "air_fresnel"),
+        default="air_fresnel",
+        help="Back boundary behavior: air_fresnel computes n_eff-to-air Fresnel reflection before counting transmitted photons as detected.",
+    )
+    parser.add_argument("--back-air-n", type=float, default=1.000293, help="Refractive index of air outside the back readout surface.")
     parser.add_argument("--samples-per-step", type=int, default=16)
     parser.add_argument("--num-threads", type=int, default=4)
     parser.add_argument("--random-seed", type=int, default=12345)
@@ -518,6 +525,8 @@ def write_thickness_light_summary(run_root: Path, thicknesses: Sequence[float]) 
         "front_reflection_mode",
         "front_aluminum_n",
         "front_aluminum_k",
+        "back_reflection_model",
+        "back_air_n",
         "mu_s_prime_per_um",
         "mu_s_prime_from_g_per_um",
         "mu_tr_per_um",
@@ -659,6 +668,8 @@ def main() -> int:
             "front_reflection_mode": args.front_reflection_mode,
             "front_aluminum_n": args.front_aluminum_n,
             "front_aluminum_k": args.front_aluminum_k,
+            "back_reflection_model": args.back_reflection_model,
+            "back_air_n": args.back_air_n,
             "samples_per_step": args.samples_per_step,
             "xy_boundary": "infinite",
             "random_seed": args.random_seed,

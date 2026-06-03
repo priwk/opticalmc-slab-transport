@@ -50,6 +50,7 @@ analysis_results/
       thickness_light_per_capture.png
       thickness_spot_spread.png
       thickness_photon_budget.png
+      thickness_mtf_thresholds.png
       event_depth_detection_efficiency.png
       psf/
       lsf/

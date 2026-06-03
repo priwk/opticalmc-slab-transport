@@ -43,11 +43,13 @@ struct RunConfig {
     int max_steps = 10000;
     double roulette_threshold = 0.0;
     double roulette_survival_probability = 1.0;
-    std::string front_reflection_model = "effective";
+    std::string front_reflection_model = "aluminum_fresnel";
     double front_reflectance = 0.0;
-    std::string front_reflection_mode = "none";
+    std::string front_reflection_mode = "specular";
     double front_aluminum_n = 0.65;
     double front_aluminum_k = 5.3;
+    std::string back_reflection_model = "air_fresnel";
+    double back_air_n = 1.000293;
     bool output_detected_photons = false;
     double psf_bin_size_um = 5.0;
     double psf_range_um = 500.0;
@@ -439,6 +441,8 @@ RunConfig readConfig(const std::string& path) {
     if (jsonString(text, "front_reflection_mode", s)) cfg.front_reflection_mode = s;
     if (jsonNumber(text, "front_aluminum_n", d)) cfg.front_aluminum_n = d;
     if (jsonNumber(text, "front_aluminum_k", d)) cfg.front_aluminum_k = d;
+    if (jsonString(text, "back_reflection_model", s)) cfg.back_reflection_model = s;
+    if (jsonNumber(text, "back_air_n", d)) cfg.back_air_n = d;
     if (jsonBool(text, "output_detected_photons", b)) cfg.output_detected_photons = b;
     if (jsonNumber(text, "psf_bin_size_um", d)) cfg.psf_bin_size_um = d;
     if (jsonNumber(text, "psf_range_um", d)) cfg.psf_range_um = d;
@@ -483,6 +487,12 @@ RunConfig readConfig(const std::string& path) {
         cfg.front_aluminum_n == 0.0 && cfg.front_aluminum_k == 0.0) {
         throw std::runtime_error(
             "front_aluminum_n and front_aluminum_k cannot both be zero for aluminum_fresnel");
+    }
+    if (cfg.back_reflection_model != "none" && cfg.back_reflection_model != "air_fresnel") {
+        throw std::runtime_error("back_reflection_model must be none or air_fresnel");
+    }
+    if (cfg.back_air_n <= 0.0) {
+        throw std::runtime_error("back_air_n must be positive");
     }
     return cfg;
 }
@@ -674,6 +684,10 @@ bool hasFrontReflection(const RunConfig& cfg) {
     return cfg.front_reflection_mode != "none";
 }
 
+bool hasBackReflection(const RunConfig& cfg) {
+    return cfg.back_reflection_model != "none";
+}
+
 Vec3 diffuseFrontReflection(std::mt19937_64& rng) {
     const double cos_theta = std::sqrt(uniformOpen(rng));
     const double sin_theta = std::sqrt(std::max(0.0, 1.0 - cos_theta * cos_theta));
@@ -711,6 +725,32 @@ double frontReflectionProbability(const Vec3& u, const RunConfig& cfg,
         return aluminumFresnelReflectance(u, cfg, op);
     }
     return cfg.front_reflectance;
+}
+
+double dielectricFresnelReflectance(double n1, double n2, double cos_i) {
+    cos_i = std::min(1.0, std::max(0.0, cos_i));
+    const double sin2_i = std::max(0.0, 1.0 - cos_i * cos_i);
+    const double eta = n1 / n2;
+    const double sin2_t = eta * eta * sin2_i;
+    if (sin2_t >= 1.0) {
+        return 1.0;
+    }
+    const double cos_t = std::sqrt(std::max(0.0, 1.0 - sin2_t));
+    const double rs_den = n1 * cos_i + n2 * cos_t;
+    const double rp_den = n2 * cos_i + n1 * cos_t;
+    const double rs = rs_den != 0.0 ? (n1 * cos_i - n2 * cos_t) / rs_den : 1.0;
+    const double rp = rp_den != 0.0 ? (n2 * cos_i - n1 * cos_t) / rp_den : 1.0;
+    const double reflectance = 0.5 * (rs * rs + rp * rp);
+    return std::min(1.0, std::max(0.0, reflectance));
+}
+
+double backReflectionProbability(const Vec3& u, const RunConfig& cfg,
+                                 const OpticalProperties& op) {
+    if (cfg.back_reflection_model == "none") {
+        return 0.0;
+    }
+    const double n1 = std::isfinite(op.n_eff) && op.n_eff > 0.0 ? op.n_eff : 1.0;
+    return dielectricFresnelReflectance(n1, cfg.back_air_n, u.z);
 }
 
 int binIndex(double value, double range, double bin_size) {
@@ -786,6 +826,14 @@ bool handleBoundaryHit(Accumulators& acc, StepStats& ss, const SourceStep& sourc
         ss.weighted_path_length += photon_weight * path_length;
         ss.weighted_scatter_count += photon_weight * scatters;
         return false;
+    }
+
+    if (boundary_surface == "back" && hasBackReflection(cfg)) {
+        p.z = cfg.thickness_um;
+        if (uniformOpen(rng) < backReflectionProbability(u, cfg, op)) {
+            u.z = -std::abs(u.z);
+            return true;
+        }
     }
 
     if (boundary_surface == "front") {
@@ -1079,7 +1127,7 @@ void writeSummary(const std::string& path, const RunConfig& cfg, const OpticalPr
     out << "ratio_tag,wavelength_nm,thickness_um,mu_a_per_um,mu_s_per_um,g,n_eff,"
            "phase_function_mode,phase_function_csv,"
            "front_reflection_model,front_reflectance,front_reflection_mode,"
-           "front_aluminum_n,front_aluminum_k,"
+           "front_aluminum_n,front_aluminum_k,back_reflection_model,back_air_n,"
            "mu_s_prime_per_um,mu_s_prime_from_g_per_um,mu_tr_per_um,absorption_length_um,scattering_length_um,transport_mfp_um,diffusion_length_um,"
            "n_events,incident_event_count,capture_fraction,n_source_steps,samples_per_step,total_source_weight,total_detected_weight,"
            "front_escape_weight,back_escape_weight,absorbed_weight,lost_weight,"
@@ -1094,6 +1142,7 @@ void writeSummary(const std::string& path, const RunConfig& cfg, const OpticalPr
         << csvEscape(cfg.front_reflection_model) << ',' << num(cfg.front_reflectance) << ','
         << csvEscape(cfg.front_reflection_mode) << ','
         << num(cfg.front_aluminum_n) << ',' << num(cfg.front_aluminum_k) << ','
+        << csvEscape(cfg.back_reflection_model) << ',' << num(cfg.back_air_n) << ','
         << num(mu_s_prime) << ',' << num(mu_s_prime_from_g) << ',' << num(mu_tr) << ','
         << num(absorption_length_um) << ',' << num(scattering_length_um) << ','
         << num(transport_mfp_um) << ',' << num(diffusion_length_um) << ','

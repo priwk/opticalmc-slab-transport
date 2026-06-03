@@ -188,6 +188,7 @@ def plot_lsf_mtf(runs: pd.DataFrame, fig_dir: Path, table_dir: Path, dpi: int, s
             lsf = load_lsf(lsf_path)
             mtf = normalized_mtf_from_lsf(lsf)
             mtf50 = crossing_frequency(mtf, 0.5)
+            mtf20 = crossing_frequency(mtf, 0.2)
             mtf10 = crossing_frequency(mtf, 0.1)
             mtf_rows.append(
                 {
@@ -195,6 +196,7 @@ def plot_lsf_mtf(runs: pd.DataFrame, fig_dir: Path, table_dir: Path, dpi: int, s
                     "thickness_um": run.thickness_um,
                     "axis": axis,
                     "mtf50_lp_per_mm": mtf50,
+                    "mtf20_lp_per_mm": mtf20,
                     "mtf10_lp_per_mm": mtf10,
                 }
             )
@@ -211,6 +213,7 @@ def plot_lsf_mtf(runs: pd.DataFrame, fig_dir: Path, table_dir: Path, dpi: int, s
                 plt.figure(figsize=(7.2, 4.4))
                 plt.plot(mtf["frequency_lp_per_mm"], mtf["mtf"], "-")
                 plt.axhline(0.5, color="0.4", linestyle="--", linewidth=1)
+                plt.axhline(0.2, color="0.5", linestyle="-.", linewidth=1)
                 plt.axhline(0.1, color="0.6", linestyle=":", linewidth=1)
                 plt.xlim(left=0)
                 plt.ylim(0, 1.05)
@@ -222,8 +225,44 @@ def plot_lsf_mtf(runs: pd.DataFrame, fig_dir: Path, table_dir: Path, dpi: int, s
 
     if mtf_rows:
         out = table_dir / "mtf_metrics.csv"
-        pd.DataFrame(mtf_rows).sort_values(["ratio_tag", "thickness_um", "axis"]).to_csv(out, index=False)
+        mtf_df = pd.DataFrame(mtf_rows).sort_values(["ratio_tag", "thickness_um", "axis"])
+        mtf_df.to_csv(out, index=False)
         print(f"wrote {out}")
+        plot_mtf_threshold_trends(mtf_df, fig_dir, dpi)
+
+
+def plot_mtf_threshold_trends(mtf_df: pd.DataFrame, fig_dir: Path, dpi: int) -> None:
+    for ratio, df in mtf_df.groupby("ratio_tag"):
+        grouped = (
+            df.groupby("thickness_um", as_index=False)[
+                ["mtf10_lp_per_mm", "mtf20_lp_per_mm", "mtf50_lp_per_mm"]
+            ]
+            .mean(numeric_only=True)
+            .sort_values("thickness_um")
+        )
+        if grouped.empty:
+            continue
+        plt.figure(figsize=(7.2, 4.6))
+        for col, label, marker in [
+            ("mtf50_lp_per_mm", "MTF50", "o"),
+            ("mtf20_lp_per_mm", "MTF20", "s"),
+            ("mtf10_lp_per_mm", "MTF10", "^"),
+        ]:
+            values = grouped[col].to_numpy(dtype=float)
+            if np.isfinite(values).any():
+                plt.plot(
+                    grouped["thickness_um"],
+                    values,
+                    marker=marker,
+                    linewidth=1.8,
+                    label=label,
+                )
+        plt.xlabel("Thickness (um)")
+        plt.ylabel("Spatial frequency (lp/mm)")
+        plt.title(f"{ratio} MTF thresholds vs thickness")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        savefig(fig_dir / ratio / "thickness_mtf_thresholds.png", dpi)
 
 
 def plot_psf(runs: pd.DataFrame, fig_dir: Path, dpi: int, selected: Optional[set[float]]) -> None:
