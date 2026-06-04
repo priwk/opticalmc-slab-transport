@@ -148,6 +148,17 @@ def parse_args() -> argparse.Namespace:
         help="散射模型：auto 使用推荐输入；tabulated 强制表格相函数；hg 强制 HG(g)。",
     )
     parser.add_argument(
+        "--transport-scattering-mode",
+        choices=("reduced-isotropic", "anisotropic"),
+        default="reduced-isotropic",
+        help="输运散射模式：默认 reduced-isotropic；anisotropic 使用 StageD 的 mu_s/g 和相函数。",
+    )
+    parser.add_argument(
+        "--run-label",
+        default=None,
+        help="可选输出子目录名，写到 outputs/<ratio>/<run-label>/。",
+    )
+    parser.add_argument(
         "--transparent-optics",
         action="store_true",
         help="调试模式：把 mu_a=mu_s=g=0，用来检查厚度趋势是否来自光学参数。",
@@ -293,9 +304,13 @@ def main() -> int:
         str(args.mu_s_scale),
         "--scattering-model",
         args.scattering_model,
+        "--transport-scattering-mode",
+        args.transport_scattering_mode,
     ]
     if args.phase_function_csv is not None:
         cmd.extend(["--phase-function-csv", str(args.phase_function_csv)])
+    if args.run_label:
+        cmd.extend(["--run-label", args.run_label])
 
     if args.thickness:
         cmd.extend(["--thickness", *args.thickness])
@@ -325,13 +340,28 @@ def main() -> int:
     print("坐标: capture/global", flush=True)
     print(f"读出面: {args.readout}", flush=True)
     print(f"光学参数: {args.optical_component}", flush=True)
+    print(f"输运散射模式: {args.transport_scattering_mode}", flush=True)
     print("执行命令:", flush=True)
     print(" ".join(cmd), flush=True)
 
     if not args.dry_run:
         subprocess.run(cmd, check=True)
         if not args.no_plot and not args.preprocess_only:
-            plot_cmd = [sys.executable, str(REPO_ROOT / "plot_thickness_light.py"), args.ratio]
+            default_run_root = args.run_label is None and args.transport_scattering_mode == "reduced-isotropic"
+            if default_run_root:
+                plot_cmd = [sys.executable, str(REPO_ROOT / "plot_thickness_light.py"), args.ratio]
+            else:
+                run_root = Path("outputs") / args.ratio / (
+                    args.run_label if args.run_label else "modeB_anisotropic"
+                )
+                plot_cmd = [
+                    sys.executable,
+                    str(REPO_ROOT / "plot_thickness_light.py"),
+                    "--summary",
+                    str(run_root / "thickness_light_summary.csv"),
+                    "--output-dir",
+                    str(run_root / "figures"),
+                ]
             print("生成厚度-出光量汇总图:", flush=True)
             print(" ".join(plot_cmd), flush=True)
             subprocess.run(plot_cmd, check=True)

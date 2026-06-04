@@ -58,6 +58,20 @@ def parse_args() -> argparse.Namespace:
         help="Scattering model for OpticalMC. auto follows recommended inputs, tabulated requires/uses a phase function, hg forces HG(g).",
     )
     parser.add_argument(
+        "--transport-scattering-mode",
+        choices=("reduced-isotropic", "anisotropic"),
+        default="reduced-isotropic",
+        help=(
+            "Transport mode. reduced-isotropic uses StageD mu_s_prime as the propagated "
+            "mu_s with g=0; anisotropic uses StageD mu_s, g, and optional phase functions."
+        ),
+    )
+    parser.add_argument(
+        "--run-label",
+        default=None,
+        help="Optional subdirectory label under outputs/<ratio>/ for this run.",
+    )
+    parser.add_argument(
         "--optical-component",
         choices=("bulk", "total", "boundary"),
         default="bulk",
@@ -305,6 +319,8 @@ def selected_transport_columns(component: str) -> Tuple[List[str], List[str], Li
 def phase_function_from_row(
     args: argparse.Namespace, row: Dict[str, str], rve_path: Path
 ) -> str:
+    if getattr(args, "transport_scattering_mode", "reduced-isotropic") == "reduced-isotropic":
+        return ""
     if args.scattering_model == "hg":
         return ""
     candidate = args.phase_function_csv
@@ -340,9 +356,22 @@ def phase_function_from_row(
     return str(candidate)
 
 
+def run_root_for_args(args: argparse.Namespace) -> Path:
+    if args.run_label:
+        return args.outputs_dir / args.ratio / args.run_label
+    if args.transport_scattering_mode == "anisotropic":
+        return args.outputs_dir / args.ratio / "modeB_anisotropic"
+    return args.outputs_dir / args.ratio
+
+
 def build_optical_properties(args: argparse.Namespace, run_root: Path) -> Path:
     if args.optical_properties is not None:
         return args.optical_properties
+
+    if not hasattr(args, "transport_scattering_mode"):
+        args.transport_scattering_mode = "reduced-isotropic"
+    if not hasattr(args, "run_label"):
+        args.run_label = None
 
     rve_path = find_optical_params(args)
     n_eff = effective_index(args)
@@ -369,8 +398,12 @@ def build_optical_properties(args: argparse.Namespace, run_root: Path) -> Path:
                 "mu_s_per_um",
                 "g",
                 "n_eff",
+                "transport_scattering_mode",
                 "mu_s_prime_per_um",
                 "phase_function_csv",
+                "mu_s_input_per_um",
+                "g_input",
+                "mu_s_prime_input_per_um",
                 "mu_a_source_column",
                 "mu_s_source_column",
                 "g_source_column",
@@ -388,6 +421,9 @@ def build_optical_properties(args: argparse.Namespace, run_root: Path) -> Path:
                 mu_s = 0.0
                 g = 0.0
                 mu_s_prime = 0.0
+                mu_s_input = 0.0
+                g_input = 0.0
+                mu_s_prime_input = 0.0
                 mu_a_source = "transparent_optics"
                 mu_s_source = "transparent_optics"
                 g_source = "transparent_optics"
@@ -415,9 +451,28 @@ def build_optical_properties(args: argparse.Namespace, run_root: Path) -> Path:
                 mu_s_prime_raw, mu_s_prime_source = first_float(
                     row, mu_s_prime_columns, rve_path, "reduced scattering"
                 )
+                mu_s_input = mu_s_raw
+                g_input = g
+                mu_s_prime_input = mu_s_prime_raw
                 mu_a = mu_a_raw * args.mu_a_scale
-                mu_s = mu_s_raw * args.mu_s_scale
-                mu_s_prime = mu_s_prime_raw * args.mu_s_scale
+                if args.transport_scattering_mode == "reduced-isotropic":
+                    mu_s = mu_s_prime_raw * args.mu_s_scale
+                    g = 0.0
+                    mu_s_prime = mu_s_prime_raw * args.mu_s_scale
+                    mu_s_source = mu_s_prime_source
+                    g_source = "reduced_isotropic"
+                else:
+                    mu_s = mu_s_raw * args.mu_s_scale
+                    mu_s_prime = mu_s_prime_raw * args.mu_s_scale
+                    mu_s_prime_from_g = mu_s * (1.0 - g)
+                    denom = max(abs(mu_s_prime), abs(mu_s_prime_from_g), 1.0e-30)
+                    if abs(mu_s_prime - mu_s_prime_from_g) / denom > 0.10:
+                        print(
+                            "warning: anisotropic transport has mu_s_prime_per_um "
+                            f"({mu_s_prime:.12g}) differing from mu_s_per_um*(1-g) "
+                            f"({mu_s_prime_from_g:.12g}) by more than 10%.",
+                            file=sys.stderr,
+                        )
             phase_function_csv = "" if args.transparent_optics else phase_function_from_row(args, row, rve_path)
             writer.writerow(
                 {
@@ -427,8 +482,12 @@ def build_optical_properties(args: argparse.Namespace, run_root: Path) -> Path:
                     "mu_s_per_um": f"{mu_s:.12g}",
                     "g": f"{g:.12g}",
                     "n_eff": f"{n_eff:.12g}",
+                    "transport_scattering_mode": args.transport_scattering_mode,
                     "mu_s_prime_per_um": f"{mu_s_prime:.12g}",
                     "phase_function_csv": phase_function_csv,
+                    "mu_s_input_per_um": f"{mu_s_input:.12g}",
+                    "g_input": f"{g_input:.12g}",
+                    "mu_s_prime_input_per_um": f"{mu_s_prime_input:.12g}",
                     "mu_a_source_column": mu_a_source,
                     "mu_s_source_column": mu_s_source,
                     "g_source_column": g_source,
@@ -523,6 +582,10 @@ def write_thickness_light_summary(run_root: Path, thicknesses: Sequence[float]) 
         "mu_s_per_um",
         "g",
         "n_eff",
+        "transport_scattering_mode",
+        "mu_s_input_per_um",
+        "g_input",
+        "mu_s_prime_input_per_um",
         "phase_function_mode",
         "phase_function_csv",
         "front_reflection_model",
@@ -595,7 +658,15 @@ def write_thickness_light_summary(run_root: Path, thicknesses: Sequence[float]) 
 
 def main() -> int:
     args = parse_args()
-    run_root = args.outputs_dir / args.ratio
+    if args.transport_scattering_mode == "reduced-isotropic" and (
+        args.phase_function_csv is not None or args.scattering_model == "tabulated"
+    ):
+        print(
+            "warning: reduced-isotropic transport ignores --phase-function-csv and "
+            "--scattering-model tabulated; using g=0 and no phase function.",
+            file=sys.stderr,
+        )
+    run_root = run_root_for_args(args)
     source_root = args.inputs_dir / args.generated_dirname / args.ratio
     thicknesses = discover_thicknesses(args)
 
@@ -608,6 +679,8 @@ def main() -> int:
     print(f"ratio,{args.ratio}", flush=True)
     print(f"thicknesses,{','.join(thickness_label(t) for t in thicknesses)}", flush=True)
     print(f"n_eff,{effective_index(args):.12g}", flush=True)
+    print(f"transport_scattering_mode,{args.transport_scattering_mode}", flush=True)
+    print(f"run_root,{run_root}", flush=True)
     print(f"optical_properties,{optical_properties}", flush=True)
 
     for thickness in thicknesses:

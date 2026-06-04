@@ -92,6 +92,9 @@ def load_summary(path: Path) -> pd.DataFrame:
             "incident_event_count",
             "capture_fraction",
             "n_source_steps",
+            "mu_s_input_per_um",
+            "g_input",
+            "mu_s_prime_input_per_um",
         ],
     )
     df = df.sort_values("thickness_um").reset_index(drop=True)
@@ -328,6 +331,10 @@ def write_analysis_csv(df: pd.DataFrame, out_dir: Path) -> Path:
         "fwhm_x",
         "fwhm_y",
         "fwhm_mean",
+        "transport_scattering_mode",
+        "mu_s_input_per_um",
+        "g_input",
+        "mu_s_prime_input_per_um",
     ]
     existing = [col for col in columns if col in df.columns]
     out_path = out_dir / "thickness_plot_data.csv"

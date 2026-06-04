@@ -68,6 +68,10 @@ struct OpticalProperties {
     double mu_s_per_um = 0.0;
     double g = 0.0;
     double n_eff = 1.0;
+    std::string transport_scattering_mode = "legacy";
+    double mu_s_input_per_um = std::numeric_limits<double>::quiet_NaN();
+    double g_input = std::numeric_limits<double>::quiet_NaN();
+    double mu_s_prime_input_per_um = std::numeric_limits<double>::quiet_NaN();
     double mu_s_prime_per_um = std::numeric_limits<double>::quiet_NaN();
     std::string phase_function_csv;
     std::vector<double> phase_mu_min;
@@ -379,6 +383,13 @@ void loadPhaseFunction(OpticalProperties& op, const std::string& optical_propert
     op.phase_function_csv = resolved;
 }
 
+std::string phaseFunctionMode(const OpticalProperties& op) {
+    if (!op.phase_cdf.empty()) {
+        return "tabulated_mu";
+    }
+    return std::abs(op.g) < 1.0e-12 ? "isotropic" : "HG";
+}
+
 std::string readText(const std::string& path) {
     std::ifstream in(path);
     if (!in) {
@@ -585,8 +596,21 @@ OpticalProperties selectOpticalProperties(const std::string& path, const RunConf
         op.mu_s_per_um = toDouble(row, "mu_s_per_um", 0.0);
         op.g = toDouble(row, "g", 0.0);
         op.n_eff = toDouble(row, "n_eff", 1.0);
+        op.transport_scattering_mode = trim(toString(row, "transport_scattering_mode"));
+        if (op.transport_scattering_mode.empty()) {
+            op.transport_scattering_mode = "legacy";
+        }
+        if (!optionalDouble(row, "mu_s_input_per_um", op.mu_s_input_per_um)) {
+            op.mu_s_input_per_um = op.mu_s_per_um;
+        }
+        if (!optionalDouble(row, "g_input", op.g_input)) {
+            op.g_input = op.g;
+        }
         op.mu_s_prime_per_um = toDouble(row, "mu_s_prime_per_um",
                                         std::numeric_limits<double>::quiet_NaN());
+        if (!optionalDouble(row, "mu_s_prime_input_per_um", op.mu_s_prime_input_per_um)) {
+            op.mu_s_prime_input_per_um = op.mu_s_prime_per_um;
+        }
         op.phase_function_csv = toString(row, "phase_function_csv");
         if (!cfg.ratio_tag.empty() && op.ratio_tag != cfg.ratio_tag) {
             continue;
@@ -1125,6 +1149,7 @@ void writeSummary(const std::string& path, const RunConfig& cfg, const OpticalPr
             : std::numeric_limits<double>::infinity();
 
     out << "ratio_tag,wavelength_nm,thickness_um,mu_a_per_um,mu_s_per_um,g,n_eff,"
+           "transport_scattering_mode,mu_s_input_per_um,g_input,mu_s_prime_input_per_um,"
            "phase_function_mode,phase_function_csv,"
            "front_reflection_model,front_reflectance,front_reflection_mode,"
            "front_aluminum_n,front_aluminum_k,back_reflection_model,back_air_n,"
@@ -1137,7 +1162,10 @@ void writeSummary(const std::string& path, const RunConfig& cfg, const OpticalPr
         << num(op.wavelength_nm) << ',' << num(cfg.thickness_um) << ','
         << num(op.mu_a_per_um) << ',' << num(op.mu_s_per_um) << ','
         << num(op.g) << ',' << num(op.n_eff) << ','
-        << csvEscape(op.phase_cdf.empty() ? "HG" : "tabulated_mu") << ','
+        << csvEscape(op.transport_scattering_mode) << ','
+        << num(op.mu_s_input_per_um) << ',' << num(op.g_input) << ','
+        << num(op.mu_s_prime_input_per_um) << ','
+        << csvEscape(phaseFunctionMode(op)) << ','
         << csvEscape(op.phase_function_csv) << ','
         << csvEscape(cfg.front_reflection_model) << ',' << num(cfg.front_reflectance) << ','
         << csvEscape(cfg.front_reflection_mode) << ','
@@ -1319,10 +1347,17 @@ int main(int argc, char** argv) {
 
         std::cout << "sources," << sources.size() << "\n";
         std::cout << "events," << events.size() << "\n";
+        std::cout << "optical_transport_scattering_mode,"
+                  << op.transport_scattering_mode << "\n";
         std::cout << "optical_mu_a_per_um," << op.mu_a_per_um << "\n";
         std::cout << "optical_mu_s_per_um," << op.mu_s_per_um << "\n";
+        std::cout << "optical_g," << op.g << "\n";
+        std::cout << "optical_mu_s_prime_per_um," << op.mu_s_prime_per_um << "\n";
+        std::cout << "optical_mu_s_input_per_um," << op.mu_s_input_per_um << "\n";
+        std::cout << "optical_g_input," << op.g_input << "\n";
+        std::cout << "optical_mu_s_prime_input_per_um," << op.mu_s_prime_input_per_um << "\n";
         std::cout << "optical_phase_function_mode,"
-                  << (op.phase_cdf.empty() ? "HG" : "tabulated_mu") << "\n";
+                  << phaseFunctionMode(op) << "\n";
 
         const int n_threads = std::max(1, std::min<int>(cfg.num_threads, sources.empty() ? 1 : static_cast<int>(sources.size())));
         std::vector<std::thread> threads;
