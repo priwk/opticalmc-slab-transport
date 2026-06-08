@@ -83,8 +83,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--random-seed", type=int, default=12345)
     parser.add_argument("--incident-event-count", type=float, default=100000.0)
     parser.add_argument("--max-steps", type=int, default=10000)
-    parser.add_argument("--psf-bin-size-um", type=float, default=5.0)
+    parser.add_argument("--psf-bin-size-um", type=float, default=10.0)
     parser.add_argument("--psf-range-um", type=float, default=500.0)
+    parser.add_argument("--lsf-range-um", type=float, default=5000.0)
     parser.add_argument("--n-model", choices=("lorentz-lorenz", "linear"), default="lorentz-lorenz")
     parser.add_argument("--n-bn", type=float, default=1.80)
     parser.add_argument("--n-zns", type=float, default=2.36)
@@ -484,6 +485,7 @@ def main() -> int:
             "output_detected_photons": True,
             "psf_bin_size_um": args.psf_bin_size_um,
             "psf_range_um": args.psf_range_um,
+            "lsf_range_um": args.lsf_range_um,
             "optical_properties_csv": str(optical_properties),
             "source_steps_csv": str(generated_dir / f"{label}_macro_zns_step_sources.csv"),
             "event_sources_csv": str(generated_dir / f"{label}_event_light_sources.csv"),

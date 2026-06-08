@@ -84,11 +84,8 @@ def normalized_mtf_from_lsf(lsf: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=["frequency_lp_per_mm", "mtf"])
 
     spacing_um = float(np.median(np.diff(pos)))
-    signal = weight - np.min(weight)
+    signal = np.clip(weight, 0.0, None)
     total = np.sum(signal)
-    if total <= 0:
-        signal = weight
-        total = np.sum(signal)
     if total <= 0:
         return pd.DataFrame(columns=["frequency_lp_per_mm", "mtf"])
 

@@ -123,8 +123,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--random-seed", type=int, default=12345)
     parser.add_argument("--incident-event-count", type=float, default=100000.0, help="Number of incident neutron histories used to normalize per-incident light output.")
     parser.add_argument("--max-steps", type=int, default=10000)
-    parser.add_argument("--psf-bin-size-um", type=float, default=5.0)
+    parser.add_argument("--psf-bin-size-um", type=float, default=10.0)
     parser.add_argument("--psf-range-um", type=float, default=500.0)
+    parser.add_argument(
+        "--lsf-range-um",
+        type=float,
+        default=5000.0,
+        help="Half-width of LSF histograms used for FWHM/MTF. Keep this much larger than psf_range_um to include long tails.",
+    )
     parser.add_argument("--output-detected-photons", action="store_true")
     parser.add_argument("--overwrite-sources", action="store_true", help="Regenerate source/event CSVs even if they already exist.")
     parser.add_argument(
@@ -759,6 +765,7 @@ def main() -> int:
             "output_detected_photons": args.output_detected_photons,
             "psf_bin_size_um": args.psf_bin_size_um,
             "psf_range_um": args.psf_range_um,
+            "lsf_range_um": args.lsf_range_um,
             "optical_properties_csv": str(optical_properties),
             "source_steps_csv": str(step_sources),
             "event_sources_csv": str(event_sources),

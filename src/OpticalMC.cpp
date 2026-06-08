@@ -53,6 +53,7 @@ struct RunConfig {
     bool output_detected_photons = false;
     double psf_bin_size_um = 5.0;
     double psf_range_um = 500.0;
+    double lsf_range_um = 5000.0;
     std::string optical_properties_csv = "optical_properties.csv";
     std::string source_steps_csv;
     std::string event_sources_csv;
@@ -457,6 +458,7 @@ RunConfig readConfig(const std::string& path) {
     if (jsonBool(text, "output_detected_photons", b)) cfg.output_detected_photons = b;
     if (jsonNumber(text, "psf_bin_size_um", d)) cfg.psf_bin_size_um = d;
     if (jsonNumber(text, "psf_range_um", d)) cfg.psf_range_um = d;
+    if (jsonNumber(text, "lsf_range_um", d)) cfg.lsf_range_um = d;
     if (jsonString(text, "optical_properties_csv", s)) cfg.optical_properties_csv = s;
     if (jsonString(text, "source_steps_csv", s)) cfg.source_steps_csv = s;
     if (jsonString(text, "event_sources_csv", s)) cfg.event_sources_csv = s;
@@ -476,8 +478,8 @@ RunConfig readConfig(const std::string& path) {
     if (cfg.num_threads <= 0) {
         cfg.num_threads = 1;
     }
-    if (cfg.psf_bin_size_um <= 0.0 || cfg.psf_range_um <= 0.0) {
-        throw std::runtime_error("psf_bin_size_um and psf_range_um must be positive");
+    if (cfg.psf_bin_size_um <= 0.0 || cfg.psf_range_um <= 0.0 || cfg.lsf_range_um <= 0.0) {
+        throw std::runtime_error("psf_bin_size_um, psf_range_um, and lsf_range_um must be positive");
     }
     if (cfg.front_reflectance < 0.0 || cfg.front_reflectance > 1.0) {
         throw std::runtime_error("front_reflectance must be between 0 and 1");
@@ -797,7 +799,7 @@ double psfAnchorY(const SourceStep& source) {
 }
 
 void recordDetected(Accumulators& acc, const SourceStep& source, int source_index,
-                    const PhotonRecord& rec, int n_bins, const RunConfig& cfg) {
+                    const PhotonRecord& rec, int n_psf_bins, const RunConfig& cfg) {
     const double dx = rec.x - psfAnchorX(source);
     const double dy = rec.y - psfAnchorY(source);
 
@@ -814,16 +816,18 @@ void recordDetected(Accumulators& acc, const SourceStep& source, int source_inde
     ev.sum_x2 += rec.weight * dx * dx;
     ev.sum_y2 += rec.weight * dy * dy;
 
-    const int bx = binIndex(dx, cfg.psf_range_um, cfg.psf_bin_size_um);
-    const int by = binIndex(dy, cfg.psf_range_um, cfg.psf_bin_size_um);
-    if (bx >= 0) {
-        acc.lsf_x[bx] += rec.weight;
+    const int lsf_bx = binIndex(dx, cfg.lsf_range_um, cfg.psf_bin_size_um);
+    const int lsf_by = binIndex(dy, cfg.lsf_range_um, cfg.psf_bin_size_um);
+    const int psf_bx = binIndex(dx, cfg.psf_range_um, cfg.psf_bin_size_um);
+    const int psf_by = binIndex(dy, cfg.psf_range_um, cfg.psf_bin_size_um);
+    if (lsf_bx >= 0) {
+        acc.lsf_x[lsf_bx] += rec.weight;
     }
-    if (by >= 0) {
-        acc.lsf_y[by] += rec.weight;
+    if (lsf_by >= 0) {
+        acc.lsf_y[lsf_by] += rec.weight;
     }
-    if (bx >= 0 && by >= 0) {
-        acc.psf_2d[static_cast<size_t>(by) * n_bins + bx] += rec.weight;
+    if (psf_bx >= 0 && psf_by >= 0) {
+        acc.psf_2d[static_cast<size_t>(psf_by) * n_psf_bins + psf_bx] += rec.weight;
     }
     if (cfg.output_detected_photons) {
         PhotonRecord copy = rec;
@@ -834,7 +838,7 @@ void recordDetected(Accumulators& acc, const SourceStep& source, int source_inde
 }
 
 bool handleBoundaryHit(Accumulators& acc, StepStats& ss, const SourceStep& source,
-                       int source_index, const RunConfig& cfg, int n_bins,
+                       int source_index, const RunConfig& cfg, int n_psf_bins,
                        const OpticalProperties& op,
                        double photon_weight, Vec3& p, Vec3& u, double path_length,
                        int scatters, const std::string& boundary_surface,
@@ -880,7 +884,7 @@ bool handleBoundaryHit(Accumulators& acc, StepStats& ss, const SourceStep& sourc
         rec.path_length_um = path_length;
         rec.scatter_count = scatters;
         rec.surface = boundary_surface;
-        recordDetected(acc, source, source_index, rec, n_bins, cfg);
+        recordDetected(acc, source, source_index, rec, n_psf_bins, cfg);
     }
     ss.weighted_path_length += photon_weight * path_length;
     ss.weighted_scatter_count += photon_weight * scatters;
@@ -888,13 +892,14 @@ bool handleBoundaryHit(Accumulators& acc, StepStats& ss, const SourceStep& sourc
 }
 
 Accumulators runRange(const std::vector<SourceStep>& sources, size_t begin, size_t end,
-                      const RunConfig& cfg, const OpticalProperties& op, int n_bins,
+                      const RunConfig& cfg, const OpticalProperties& op, int n_psf_bins,
+                      int n_lsf_bins,
                       uint64_t seed_offset) {
     Accumulators acc;
     acc.step_stats.resize(sources.size());
-    acc.psf_2d.assign(static_cast<size_t>(n_bins) * n_bins, 0.0);
-    acc.lsf_x.assign(n_bins, 0.0);
-    acc.lsf_y.assign(n_bins, 0.0);
+    acc.psf_2d.assign(static_cast<size_t>(n_psf_bins) * n_psf_bins, 0.0);
+    acc.lsf_x.assign(n_lsf_bins, 0.0);
+    acc.lsf_y.assign(n_lsf_bins, 0.0);
     std::mt19937_64 rng(cfg.random_seed + 0x9E3779B97F4A7C15ull * (seed_offset + 1));
     const double mu_t = op.mu_a_per_um + op.mu_s_per_um;
     if (mu_t < 0.0 || op.mu_a_per_um < 0.0 || op.mu_s_per_um < 0.0) {
@@ -943,7 +948,7 @@ Accumulators runRange(const std::vector<SourceStep>& sources, size_t begin, size
                     p.y += boundary_distance * u.y;
                     p.z += boundary_distance * u.z;
                     path_length += boundary_distance;
-                    alive = handleBoundaryHit(acc, ss, source, static_cast<int>(si), cfg, n_bins,
+                    alive = handleBoundaryHit(acc, ss, source, static_cast<int>(si), cfg, n_psf_bins,
                                               op,
                                               photon_weight, p, u, path_length, scatters,
                                               boundary_surface, rng);
@@ -956,7 +961,7 @@ Accumulators runRange(const std::vector<SourceStep>& sources, size_t begin, size
                     p.y += boundary_distance * u.y;
                     p.z += boundary_distance * u.z;
                     path_length += boundary_distance;
-                    alive = handleBoundaryHit(acc, ss, source, static_cast<int>(si), cfg, n_bins,
+                    alive = handleBoundaryHit(acc, ss, source, static_cast<int>(si), cfg, n_psf_bins,
                                               op,
                                               photon_weight, p, u, path_length, scatters,
                                               boundary_surface, rng);
@@ -1131,8 +1136,11 @@ void writeSummary(const std::string& path, const RunConfig& cfg, const OpticalPr
     const double rms_r = std::isfinite(rms_x) && std::isfinite(rms_y)
                              ? std::sqrt(rms_x * rms_x + rms_y * rms_y)
                              : std::numeric_limits<double>::quiet_NaN();
-    const double fwhm_x = fwhmFromLsf(acc.lsf_x, cfg.psf_range_um, cfg.psf_bin_size_um);
-    const double fwhm_y = fwhmFromLsf(acc.lsf_y, cfg.psf_range_um, cfg.psf_bin_size_um);
+    const double fwhm_x = fwhmFromLsf(acc.lsf_x, cfg.lsf_range_um, cfg.psf_bin_size_um);
+    const double fwhm_y = fwhmFromLsf(acc.lsf_y, cfg.lsf_range_um, cfg.psf_bin_size_um);
+    const double lsf_x_weight = std::accumulate(acc.lsf_x.begin(), acc.lsf_x.end(), 0.0);
+    const double lsf_y_weight = std::accumulate(acc.lsf_y.begin(), acc.lsf_y.end(), 0.0);
+    const double psf_2d_weight = std::accumulate(acc.psf_2d.begin(), acc.psf_2d.end(), 0.0);
     const double mu_s_prime_from_g = op.mu_s_per_um * (1.0 - op.g);
     const double mu_s_prime = std::isfinite(op.mu_s_prime_per_um) ? op.mu_s_prime_per_um
                                                                   : mu_s_prime_from_g;
@@ -1157,6 +1165,7 @@ void writeSummary(const std::string& path, const RunConfig& cfg, const OpticalPr
            "n_events,incident_event_count,capture_fraction,n_source_steps,samples_per_step,total_source_weight,total_detected_weight,"
            "front_escape_weight,back_escape_weight,absorbed_weight,lost_weight,"
            "mean_light_per_capture,mean_detected_light_per_capture,mean_light_per_incident,mean_detected_light_per_incident,detection_efficiency,"
+           "psf_bin_size_um,psf_range_um,lsf_range_um,lsf_x_in_range_fraction,lsf_y_in_range_fraction,psf_2d_in_range_fraction,"
            "spot_rms_x,spot_rms_y,spot_rms_r,fwhm_x,fwhm_y\n";
     out << csvEscape(cfg.ratio_tag.empty() ? op.ratio_tag : cfg.ratio_tag) << ','
         << num(op.wavelength_nm) << ',' << num(cfg.thickness_um) << ','
@@ -1185,6 +1194,11 @@ void writeSummary(const std::string& path, const RunConfig& cfg, const OpticalPr
         << num(incident_events > 0.0 ? total_capture_light / incident_events : 0.0) << ','
         << num(incident_events > 0.0 ? acc.detected_weight / incident_events : 0.0) << ','
         << num(acc.total_source_weight > 0.0 ? acc.detected_weight / acc.total_source_weight : 0.0)
+        << ',' << num(cfg.psf_bin_size_um) << ',' << num(cfg.psf_range_um) << ','
+        << num(cfg.lsf_range_um) << ','
+        << num(acc.detected_weight > 0.0 ? lsf_x_weight / acc.detected_weight : 0.0)
+        << ',' << num(acc.detected_weight > 0.0 ? lsf_y_weight / acc.detected_weight : 0.0)
+        << ',' << num(acc.detected_weight > 0.0 ? psf_2d_weight / acc.detected_weight : 0.0)
         << ',' << num(rms_x) << ',' << num(rms_y) << ',' << num(rms_r) << ','
         << num(fwhm_x) << ',' << num(fwhm_y) << '\n';
 }
@@ -1261,16 +1275,16 @@ void writeDetectedPhotons(const std::string& path, const std::vector<PhotonRecor
     }
 }
 
-void writePsfLsf(const RunConfig& cfg, const Accumulators& acc, int n_bins) {
+void writePsfLsf(const RunConfig& cfg, const Accumulators& acc, int n_psf_bins, int n_lsf_bins) {
     {
         std::ofstream out(pathJoin(cfg.output_dir, "psf_2d.csv"));
         if (!out) throw std::runtime_error("cannot write psf_2d.csv");
         out << "x_bin_center_um,y_bin_center_um,weight\n";
-        for (int y = 0; y < n_bins; ++y) {
-            for (int x = 0; x < n_bins; ++x) {
+        for (int y = 0; y < n_psf_bins; ++y) {
+            for (int x = 0; x < n_psf_bins; ++x) {
                 out << num(binCenter(x, cfg.psf_range_um, cfg.psf_bin_size_um)) << ','
                     << num(binCenter(y, cfg.psf_range_um, cfg.psf_bin_size_um)) << ','
-                    << num(acc.psf_2d[static_cast<size_t>(y) * n_bins + x]) << '\n';
+                    << num(acc.psf_2d[static_cast<size_t>(y) * n_psf_bins + x]) << '\n';
             }
         }
     }
@@ -1278,8 +1292,8 @@ void writePsfLsf(const RunConfig& cfg, const Accumulators& acc, int n_bins) {
         std::ofstream out(pathJoin(cfg.output_dir, "lsf_x.csv"));
         if (!out) throw std::runtime_error("cannot write lsf_x.csv");
         out << "x_bin_center_um,weight\n";
-        for (int x = 0; x < n_bins; ++x) {
-            out << num(binCenter(x, cfg.psf_range_um, cfg.psf_bin_size_um)) << ','
+        for (int x = 0; x < n_lsf_bins; ++x) {
+            out << num(binCenter(x, cfg.lsf_range_um, cfg.psf_bin_size_um)) << ','
                 << num(acc.lsf_x[x]) << '\n';
         }
     }
@@ -1287,8 +1301,8 @@ void writePsfLsf(const RunConfig& cfg, const Accumulators& acc, int n_bins) {
         std::ofstream out(pathJoin(cfg.output_dir, "lsf_y.csv"));
         if (!out) throw std::runtime_error("cannot write lsf_y.csv");
         out << "y_bin_center_um,weight\n";
-        for (int y = 0; y < n_bins; ++y) {
-            out << num(binCenter(y, cfg.psf_range_um, cfg.psf_bin_size_um)) << ','
+        for (int y = 0; y < n_lsf_bins; ++y) {
+            out << num(binCenter(y, cfg.lsf_range_um, cfg.psf_bin_size_um)) << ','
                 << num(acc.lsf_y[y]) << '\n';
         }
     }
@@ -1340,9 +1354,10 @@ int main(int argc, char** argv) {
         if (cfg.ratio_tag.empty()) {
             cfg.ratio_tag = op.ratio_tag;
         }
-        const int n_bins = static_cast<int>(std::ceil(2.0 * cfg.psf_range_um / cfg.psf_bin_size_um));
-        if (n_bins <= 0) {
-            throw std::runtime_error("invalid PSF bin configuration");
+        const int n_psf_bins = static_cast<int>(std::ceil(2.0 * cfg.psf_range_um / cfg.psf_bin_size_um));
+        const int n_lsf_bins = static_cast<int>(std::ceil(2.0 * cfg.lsf_range_um / cfg.psf_bin_size_um));
+        if (n_psf_bins <= 0 || n_lsf_bins <= 0) {
+            throw std::runtime_error("invalid PSF/LSF bin configuration");
         }
 
         std::cout << "sources," << sources.size() << "\n";
@@ -1370,7 +1385,8 @@ int main(int argc, char** argv) {
             const size_t end = sources.size() * static_cast<size_t>(tid + 1) / static_cast<size_t>(n_threads);
             threads.emplace_back([&, tid, begin, end]() {
                 try {
-                    partials[tid] = runRange(sources, begin, end, cfg, op, n_bins, static_cast<uint64_t>(tid));
+                    partials[tid] = runRange(sources, begin, end, cfg, op, n_psf_bins, n_lsf_bins,
+                                             static_cast<uint64_t>(tid));
                 } catch (...) {
                     std::lock_guard<std::mutex> lock(error_mutex);
                     if (!thread_error) {
@@ -1394,7 +1410,7 @@ int main(int argc, char** argv) {
         writeSummary(pathJoin(cfg.output_dir, "optical_mc_summary.csv"), cfg, op, events, acc);
         writeEventSummary(pathJoin(cfg.output_dir, "optical_mc_event_summary.csv"), events, acc);
         writeStepSummary(pathJoin(cfg.output_dir, "optical_mc_source_step_summary.csv"), sources, acc);
-        writePsfLsf(cfg, acc, n_bins);
+        writePsfLsf(cfg, acc, n_psf_bins, n_lsf_bins);
         if (cfg.output_detected_photons) {
             writeDetectedPhotons(pathJoin(cfg.output_dir, "detected_photons.csv"), acc.detected);
         }

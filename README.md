@@ -480,12 +480,17 @@ mean_light_per_capture
 mean_detected_light_per_capture
 detection_efficiency
 capture_fraction
+lsf_x_in_range_fraction
+lsf_y_in_range_fraction
+psf_2d_in_range_fraction
 spot_rms_x
 spot_rms_y
 spot_rms_r
 fwhm_x
 fwhm_y
 ```
+
+MTF/FWHM 使用 `lsf_x.csv` 和 `lsf_y.csv`。为避免厚屏长尾被 2D PSF 可视化窗口截断，运行配置中可单独设置 `lsf_range_um`；`psf_range_um` 只控制 `psf_2d.csv` 的二维窗口。建议确认 `lsf_x_in_range_fraction` 和 `lsf_y_in_range_fraction` 接近 1，再使用 MTF 曲线。
 
 批量运行结束后，还会生成跨厚度汇总表：
 
