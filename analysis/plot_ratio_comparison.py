@@ -14,7 +14,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from common import discover_runs, read_summary
+from common import RUN_TAG_SEPARATOR, discover_runs, read_summary, run_filter_matches, run_tag
 
 
 NUMERIC_COLUMNS = [
@@ -69,7 +69,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def ratio_sort_key(value: str) -> tuple[float, float, str]:
-    parts = value.split("-", 1)
+    ratio = value.split(RUN_TAG_SEPARATOR, 1)[0].split("/", 1)[0]
+    parts = ratio.split("-", 1)
     if len(parts) == 2:
         try:
             return (float(parts[0]), float(parts[1]), value)
@@ -79,7 +80,7 @@ def ratio_sort_key(value: str) -> tuple[float, float, str]:
 
 
 def format_ratio_label(value: str) -> str:
-    return value.replace("-", ":")
+    return value.replace(RUN_TAG_SEPARATOR, " ").replace("-", ":")
 
 
 def is_relative_to(path: Path, parent: Path) -> bool:
@@ -107,10 +108,26 @@ def numeric(df: pd.DataFrame, columns: Iterable[str]) -> pd.DataFrame:
     return df
 
 
+def summary_path_for_tag(outputs_dir: Path, tag: str) -> Optional[Path]:
+    direct = outputs_dir / tag / "thickness_light_summary.csv"
+    if direct.exists():
+        return direct
+
+    for separator in (RUN_TAG_SEPARATOR, "/"):
+        if separator not in tag:
+            continue
+        ratio, run_label = tag.split(separator, 1)
+        nested = outputs_dir / ratio / run_label / "thickness_light_summary.csv"
+        if nested.exists():
+            return nested
+    return None
+
+
 def load_ratio_summary(outputs_dir: Path, ratio: str) -> pd.DataFrame:
-    summary_path = outputs_dir / ratio / "thickness_light_summary.csv"
-    if summary_path.exists():
+    summary_path = summary_path_for_tag(outputs_dir, ratio)
+    if summary_path is not None:
         df = pd.read_csv(summary_path)
+        df["ratio_tag"] = ratio
     else:
         runs = discover_runs(outputs_dir, [ratio])
         rows = []
@@ -140,16 +157,36 @@ def load_ratio_summary(outputs_dir: Path, ratio: str) -> pd.DataFrame:
 
 
 def discover_ratios(outputs_dir: Path, requested: Optional[List[str]]) -> List[str]:
-    if requested:
-        return requested
     if not outputs_dir.exists():
         return []
+    ratio_filter = set(requested or [])
     ratios = []
+    seen = set()
+
+    def add(tag: str) -> None:
+        if tag not in seen:
+            seen.add(tag)
+            ratios.append(tag)
+
     for path in outputs_dir.iterdir():
         if not path.is_dir():
             continue
-        if (path / "thickness_light_summary.csv").exists() or not discover_runs(outputs_dir, [path.name]).empty:
-            ratios.append(path.name)
+        ratio = path.name
+        if ratio.startswith("_") and not ratio_filter:
+            continue
+        if run_filter_matches(ratio_filter, ratio, None) and (path / "thickness_light_summary.csv").exists():
+            add(ratio)
+        for run_dir in sorted(p for p in path.iterdir() if p.is_dir()):
+            if not (run_dir / "thickness_light_summary.csv").exists():
+                continue
+            tag = run_tag(ratio, run_dir.name)
+            if run_filter_matches(ratio_filter, ratio, run_dir.name):
+                add(tag)
+
+    runs = discover_runs(outputs_dir, requested)
+    if not runs.empty:
+        for tag in runs["ratio_tag"].drop_duplicates():
+            add(str(tag))
     return sorted(ratios, key=ratio_sort_key)
 
 
