@@ -35,6 +35,9 @@ def default_opticalmc_path() -> Path:
     return PROJECT_ROOT / ("OpticalMC.exe" if os.name == "nt" else "OpticalMC")
 
 
+DEFAULT_STRIP_THICKNESSES = ["50", "100", "200", "500"]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -42,8 +45,18 @@ def parse_args() -> argparse.Namespace:
             "run OpticalMC, and write only final photon-position imaging outputs."
         )
     )
-    parser.add_argument("--ratio", required=True, help="BN:ZnS mass ratio tag, e.g. 1-1.")
-    parser.add_argument("--thickness", required=True, help="Thickness in um, e.g. 100.")
+    parser.add_argument(
+        "--ratio",
+        nargs="*",
+        default=None,
+        help="BN:ZnS mass ratio tag(s), e.g. 1-1. Omit or pass all to run every ratio under inputs/stageB.",
+    )
+    parser.add_argument(
+        "--thickness",
+        nargs="*",
+        default=None,
+        help="Thickness list in um. Defaults to 50 100 200 500.",
+    )
     parser.add_argument("--mask-image", type=Path, required=True, help="Square black/white mask image.")
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--inputs-dir", type=Path, default=PROJECT_ROOT / "inputs")
@@ -126,6 +139,52 @@ def parse_args() -> argparse.Namespace:
 
 def thickness_label(text: str) -> str:
     return batch.thickness_label(float(text))
+
+
+def discover_ratios(inputs_dir: Path, stageb_dirname: str, optical_param_dirname: str) -> List[str]:
+    stageb_root = inputs_dir / stageb_dirname
+    if not stageb_root.exists():
+        return []
+    optical_root = inputs_dir / optical_param_dirname
+    ratios = []
+    for path in sorted(p for p in stageb_root.iterdir() if p.is_dir()):
+        if has_optical_params(optical_root, path.name):
+            ratios.append(path.name)
+    return ratios
+
+
+def has_optical_params(optical_root: Path, ratio: str) -> bool:
+    base = optical_root / ratio
+    return any(
+        (base / name).exists()
+        for name in (
+            "monte_carlo_recommended_inputs.csv",
+            "monte_carlo_recommended_inputs.json",
+            "rve_raw_optical_params_by_ratio.csv",
+            "optical_params.csv",
+        )
+    )
+
+
+def selected_ratios(args: argparse.Namespace) -> List[str]:
+    requested = args.ratio or ["all"]
+    if any(str(item).lower() == "all" for item in requested):
+        ratios = discover_ratios(args.inputs_dir, args.stageb_dirname, args.optical_param_dirname)
+        if not ratios:
+            raise FileNotFoundError(args.inputs_dir / args.stageb_dirname)
+        return ratios
+    return [str(item) for item in requested]
+
+
+def selected_thicknesses(args: argparse.Namespace) -> List[str]:
+    values = args.thickness or DEFAULT_STRIP_THICKNESSES
+    out = []
+    for item in values:
+        for token in str(item).split(","):
+            token = token.strip()
+            if token:
+                out.append(thickness_label(token))
+    return out
 
 
 def read_mask(path: Path, threshold: float, block_edge: bool) -> np.ndarray:
@@ -395,8 +454,50 @@ def make_outputs(args: argparse.Namespace, detected_photons: Path, out_dir: Path
     )
 
 
-def main() -> int:
-    args = parse_args()
+def save_ratio_strip(
+    ratio: str,
+    thicknesses: Sequence[str],
+    ratio_dir: Path,
+    output_path: Path,
+) -> Optional[Path]:
+    panels: List[Tuple[str, Optional[np.ndarray]]] = []
+    for thickness in thicknesses:
+        path = ratio_dir / thickness_label(thickness) / "simulated_radiograph.png"
+        if path.exists():
+            panels.append((thickness_label(thickness), mpimg.imread(path)))
+        else:
+            panels.append((thickness_label(thickness), None))
+
+    if not any(image is not None for _, image in panels):
+        return None
+
+    fig, axes = plt.subplots(1, len(panels), figsize=(3.0 * len(panels), 3.0), dpi=220)
+    if len(panels) == 1:
+        axes = [axes]
+    for ax, (label, image) in zip(axes, panels):
+        ax.set_box_aspect(1)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_title(f"{label} um", fontsize=10)
+        if image is None:
+            ax.text(0.5, 0.5, "missing", ha="center", va="center", transform=ax.transAxes)
+            for spine in ax.spines.values():
+                spine.set_visible(True)
+                spine.set_linewidth(0.8)
+            continue
+        ax.imshow(image, cmap="gray", origin="lower")
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+    fig.suptitle(f"Ratio {ratio}", y=0.98, fontsize=12)
+    fig.tight_layout(pad=0.4, w_pad=0.2)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path)
+    plt.close(fig)
+    print(f"wrote,{output_path}", flush=True)
+    return output_path
+
+
+def run_one_mask_imaging(args: argparse.Namespace) -> int:
     label = thickness_label(args.thickness)
     out_dir = args.output_dir or (PROJECT_ROOT / "outputs" / "mask_imaging" / args.ratio / label)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -508,6 +609,46 @@ def main() -> int:
             print(f"kept_intermediates,{temp_dir}", flush=True)
         else:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def main() -> int:
+    args = parse_args()
+    ratios = selected_ratios(args)
+    thicknesses = selected_thicknesses(args)
+    failures: List[Tuple[str, str, str]] = []
+
+    for ratio in ratios:
+        for thickness in thicknesses:
+            run_args = argparse.Namespace(**vars(args))
+            run_args.ratio = ratio
+            run_args.thickness = thickness
+            run_args.output_dir = (
+                args.output_dir / ratio / thickness_label(thickness)
+                if args.output_dir is not None and len(ratios) * len(thicknesses) > 1
+                else args.output_dir
+            )
+            try:
+                print(f"mask_imaging_run,{ratio},{thickness_label(thickness)}", flush=True)
+                run_one_mask_imaging(run_args)
+            except Exception as exc:
+                failures.append((ratio, thickness_label(thickness), str(exc)))
+                print(f"failed,{ratio},{thickness_label(thickness)},{exc}", flush=True)
+
+        if not args.dry_run:
+            ratio_dir = (
+                args.output_dir / ratio
+                if args.output_dir is not None and len(ratios) * len(thicknesses) > 1
+                else PROJECT_ROOT / "outputs" / "mask_imaging" / ratio
+            )
+            strip_name = "radiograph_strip_" + "_".join(thickness_label(t) for t in thicknesses) + "um.png"
+            save_ratio_strip(ratio, thicknesses, ratio_dir, ratio_dir / strip_name)
+
+    if failures:
+        print("mask_imaging failures:", flush=True)
+        for ratio, thickness, message in failures:
+            print(f"  {ratio} {thickness} um: {message}", flush=True)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

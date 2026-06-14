@@ -12,9 +12,27 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
-from common import RUN_TAG_SEPARATOR, discover_runs, read_summary, run_filter_matches, run_tag
+from common import (
+    READOUT_LIGHT_SCALE_DEFAULT,
+    RUN_TAG_SEPARATOR,
+    add_plot_metrics,
+    configure_plot_style,
+    detected_light_column,
+    discover_runs,
+    load_phase_function,
+    phase_function_polar_curve,
+    phase_function_with_theta,
+    read_summary,
+    resolve_existing_path,
+    run_filter_matches,
+    run_tag,
+    select_panel_thicknesses,
+    style_axes,
+    style_figure_axes,
+)
 
 
 NUMERIC_COLUMNS = [
@@ -56,10 +74,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--formats",
         nargs="+",
-        default=["png", "pdf"],
-        help="Output figure formats, e.g. --formats png pdf svg.",
+        default=["png"],
+        help="Output figure formats, e.g. --formats png svg.",
     )
     parser.add_argument("--dpi", type=int, default=300)
+    parser.add_argument(
+        "--light-scale",
+        type=float,
+        default=READOUT_LIGHT_SCALE_DEFAULT,
+        help="Scale for readout light per incident neutron. Defaults to 1000000.",
+    )
     parser.add_argument(
         "--overwrite",
         action="store_true",
@@ -123,11 +147,22 @@ def summary_path_for_tag(outputs_dir: Path, tag: str) -> Optional[Path]:
     return None
 
 
-def load_ratio_summary(outputs_dir: Path, ratio: str) -> pd.DataFrame:
+def table_summary_path(analysis_dir: Path, ratio: str) -> Optional[Path]:
+    candidate = analysis_dir / "tables" / f"summary_{ratio}.csv"
+    if candidate.exists():
+        return candidate
+    return None
+
+
+def load_ratio_summary(outputs_dir: Path, analysis_dir: Path, ratio: str, light_scale: float) -> pd.DataFrame:
     summary_path = summary_path_for_tag(outputs_dir, ratio)
     if summary_path is not None:
         df = pd.read_csv(summary_path)
         df["ratio_tag"] = ratio
+    elif table_summary_path(analysis_dir, ratio) is not None:
+        df = pd.read_csv(table_summary_path(analysis_dir, ratio))
+        if "ratio_tag" not in df.columns:
+            df["ratio_tag"] = ratio
     else:
         runs = discover_runs(outputs_dir, [ratio])
         rows = []
@@ -143,22 +178,16 @@ def load_ratio_summary(outputs_dir: Path, ratio: str) -> pd.DataFrame:
     if "ratio_tag" not in df.columns:
         df["ratio_tag"] = ratio
     numeric(df, NUMERIC_COLUMNS)
-    if "fwhm_mean" not in df.columns and {"fwhm_x", "fwhm_y"}.issubset(df.columns):
-        df["fwhm_mean"] = df[["fwhm_x", "fwhm_y"]].mean(axis=1)
-    if "detection_efficiency_percent" not in df.columns and "detection_efficiency" in df.columns:
-        df["detection_efficiency_percent"] = 100.0 * df["detection_efficiency"]
-    if "capture_fraction_percent" not in df.columns and "capture_fraction" in df.columns:
-        df["capture_fraction_percent"] = 100.0 * df["capture_fraction"]
-    light_col = detected_light_column(df)
-    if light_col and "detected_light_norm_by_ratio" not in df.columns:
-        max_value = df[light_col].max()
-        df["detected_light_norm_by_ratio"] = df[light_col] / max_value if max_value > 0 else 0.0
+    df = add_plot_metrics(df, light_scale)
+    if "detected_light_norm_by_ratio" not in df.columns and "readout_light_per_million_incident" in df.columns:
+        max_value = df["readout_light_per_million_incident"].max()
+        df["detected_light_norm_by_ratio"] = (
+            df["readout_light_per_million_incident"] / max_value if max_value > 0 else 0.0
+        )
     return df.sort_values("thickness_um").reset_index(drop=True)
 
 
-def discover_ratios(outputs_dir: Path, requested: Optional[List[str]]) -> List[str]:
-    if not outputs_dir.exists():
-        return []
+def discover_ratios(outputs_dir: Path, analysis_dir: Path, requested: Optional[List[str]]) -> List[str]:
     ratio_filter = set(requested or [])
     ratios = []
     seen = set()
@@ -168,20 +197,30 @@ def discover_ratios(outputs_dir: Path, requested: Optional[List[str]]) -> List[s
             seen.add(tag)
             ratios.append(tag)
 
-    for path in outputs_dir.iterdir():
-        if not path.is_dir():
-            continue
-        ratio = path.name
-        if ratio.startswith("_") and not ratio_filter:
-            continue
-        if run_filter_matches(ratio_filter, ratio, None) and (path / "thickness_light_summary.csv").exists():
-            add(ratio)
-        for run_dir in sorted(p for p in path.iterdir() if p.is_dir()):
-            if not (run_dir / "thickness_light_summary.csv").exists():
+    if outputs_dir.exists():
+        for path in outputs_dir.iterdir():
+            if not path.is_dir():
                 continue
-            tag = run_tag(ratio, run_dir.name)
-            if run_filter_matches(ratio_filter, ratio, run_dir.name):
-                add(tag)
+            ratio = path.name
+            if ratio.startswith("_") and not ratio_filter:
+                continue
+            if run_filter_matches(ratio_filter, ratio, None) and (path / "thickness_light_summary.csv").exists():
+                add(ratio)
+            for run_dir in sorted(p for p in path.iterdir() if p.is_dir()):
+                if not (run_dir / "thickness_light_summary.csv").exists():
+                    continue
+                tag = run_tag(ratio, run_dir.name)
+                if run_filter_matches(ratio_filter, ratio, run_dir.name):
+                    add(tag)
+
+    table_dir = analysis_dir / "tables"
+    if table_dir.exists():
+        for path in sorted(table_dir.glob("summary_*.csv")):
+            if path.name in {"summary_all.csv", "summary_for_plots.csv"}:
+                continue
+            ratio = path.stem.removeprefix("summary_")
+            if run_filter_matches(ratio_filter, ratio, None):
+                add(ratio)
 
     runs = discover_runs(outputs_dir, requested)
     if not runs.empty:
@@ -190,16 +229,9 @@ def discover_ratios(outputs_dir: Path, requested: Optional[List[str]]) -> List[s
     return sorted(ratios, key=ratio_sort_key)
 
 
-def detected_light_column(df: pd.DataFrame) -> Optional[str]:
-    if "mean_detected_light_per_incident" in df.columns:
-        return "mean_detected_light_per_incident"
-    if "mean_detected_light_per_capture" in df.columns:
-        return "mean_detected_light_per_capture"
-    return None
-
-
 def save_all(fig: plt.Figure, out_dir: Path, stem: str, formats: List[str], dpi: int) -> List[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
+    style_figure_axes(fig)
     paths: List[Path] = []
     for fmt in formats:
         path = out_dir / f"{stem}.{fmt.lstrip('.')}"
@@ -207,13 +239,6 @@ def save_all(fig: plt.Figure, out_dir: Path, stem: str, formats: List[str], dpi:
         paths.append(path)
     plt.close(fig)
     return paths
-
-
-def style_axes(ax: plt.Axes) -> None:
-    ax.grid(True, color="#d9d9d9", linewidth=0.7, alpha=0.8)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-
 
 def plot_metric(
     df: pd.DataFrame,
@@ -225,7 +250,7 @@ def plot_metric(
     formats: List[str],
     dpi: int,
 ) -> List[Path]:
-    fig, ax = plt.subplots(figsize=(6.8, 4.4))
+    fig, ax = plt.subplots(figsize=(7.2, 4.8))
     for ratio, group in df.groupby("ratio_tag", sort=False, observed=True):
         group = group.sort_values("thickness_um")
         ax.plot(
@@ -241,6 +266,63 @@ def plot_metric(
     style_axes(ax)
     ax.legend(title="Ratio", frameon=False)
     return save_all(fig, out_dir, stem, formats, dpi)
+
+
+def plot_metric_by_thickness_panels(
+    df: pd.DataFrame,
+    y_col: str,
+    y_label: str,
+    out_dir: Path,
+    stem: str,
+    formats: List[str],
+    dpi: int,
+) -> List[Path]:
+    if y_col not in df.columns:
+        return []
+    panel_thicknesses = select_panel_thicknesses(df["thickness_um"], 6)
+    if not panel_thicknesses:
+        return []
+    fig, axes = plt.subplots(2, 3, figsize=(7.2, 4.8), squeeze=False)
+    if isinstance(df["ratio_tag"].dtype, pd.CategoricalDtype):
+        categories = list(df["ratio_tag"].cat.categories)
+    else:
+        categories = list(df["ratio_tag"].drop_duplicates())
+    for ax in axes.ravel():
+        ax.set_visible(False)
+    for panel_index, (ax, thickness) in enumerate(zip(axes.ravel(), panel_thicknesses)):
+        sub = df[np.isclose(df["thickness_um"].astype(float), thickness)].copy()
+        if sub.empty:
+            continue
+        sub["ratio_tag"] = pd.Categorical(sub["ratio_tag"], categories=categories, ordered=True)
+        sub = sub.sort_values("ratio_tag")
+        x = np.arange(len(sub))
+        ax.set_visible(True)
+        ax.plot(x, sub[y_col], marker="o", linewidth=1.4)
+        ax.set_title(f"{thickness_label_for_axis(thickness)} um", fontsize=9)
+        ax.set_xticks(x)
+        if panel_index // 3 == 1:
+            ax.set_xticklabels(
+                [format_ratio_label(str(v)) for v in sub["ratio_tag"]],
+                rotation=45,
+                ha="right",
+                fontsize=7,
+            )
+        else:
+            ax.set_xticklabels([])
+        if panel_index % 3 == 0:
+            ax.set_ylabel(y_label, fontsize=8)
+        else:
+            ax.set_ylabel("")
+            ax.tick_params(labelleft=False)
+        ax.tick_params(labelsize=7)
+        style_axes(ax, square=True)
+    fig.suptitle(y_label, y=0.99)
+    fig.tight_layout(rect=(0.02, 0.0, 1.0, 0.96))
+    return save_all(fig, out_dir, stem, formats, dpi)
+
+
+def thickness_label_for_axis(value: float) -> str:
+    return f"{float(value):.12g}"
 
 
 def plot_summary_grid(
@@ -284,6 +366,9 @@ def write_plot_data(df: pd.DataFrame, out_dir: Path, light_col: str) -> Path:
         "ratio_tag",
         "thickness_um",
         light_col,
+        "readout_light_per_incident",
+        "readout_light_per_million_incident",
+        "readout_light_relative",
         "mean_light_per_incident",
         "mean_light_per_capture",
         "mean_detected_light_per_capture",
@@ -307,15 +392,200 @@ def write_plot_data(df: pd.DataFrame, out_dir: Path, light_col: str) -> Path:
     return out_path
 
 
+def load_mtf_metrics(outputs_dir: Path, analysis_dir: Path, requested: Optional[List[str]]) -> pd.DataFrame:
+    table_path = analysis_dir / "tables" / "mtf_metrics.csv"
+    if table_path.exists():
+        df = pd.read_csv(table_path)
+        if not df.empty:
+            numeric(df, ["thickness_um", "mtf50_lp_per_mm", "mtf10_lp_per_mm"])
+            return df
+
+    from common import crossing_frequency, load_lsf, normalized_mtf_from_lsf
+
+    runs = discover_runs(outputs_dir, requested)
+    rows = []
+    for run in runs.itertuples(index=False):
+        for axis, lsf_path in [("x", Path(run.lsf_x_csv)), ("y", Path(run.lsf_y_csv))]:
+            if not lsf_path.exists():
+                continue
+            mtf = normalized_mtf_from_lsf(load_lsf(lsf_path))
+            rows.append(
+                {
+                    "ratio_tag": run.ratio_tag,
+                    "thickness_um": run.thickness_um,
+                    "axis": axis,
+                    "mtf50_lp_per_mm": crossing_frequency(mtf, 0.5),
+                    "mtf10_lp_per_mm": crossing_frequency(mtf, 0.1),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def plot_mtf_comparison(
+    mtf_df: pd.DataFrame, out_dir: Path, formats: List[str], dpi: int
+) -> List[Path]:
+    if mtf_df.empty:
+        return []
+    grouped = (
+        mtf_df.groupby(["ratio_tag", "thickness_um"], as_index=False)[
+            ["mtf50_lp_per_mm", "mtf10_lp_per_mm"]
+        ]
+        .mean(numeric_only=True)
+        .sort_values(["ratio_tag", "thickness_um"])
+    )
+    paths: List[Path] = []
+    fig, ax = plt.subplots(figsize=(5.2, 5.2))
+    for ratio, group in grouped.groupby("ratio_tag", sort=False):
+        ax.plot(group["thickness_um"], group["mtf50_lp_per_mm"], marker="o", linewidth=1.6, label=f"{format_ratio_label(str(ratio))} MTF50")
+        ax.plot(group["thickness_um"], group["mtf10_lp_per_mm"], marker="s", linestyle="--", linewidth=1.4, label=f"{format_ratio_label(str(ratio))} MTF10")
+    ax.set_xlabel("Thickness (um)")
+    ax.set_ylabel("Spatial frequency (lp/mm)")
+    ax.set_title("MTF50 and MTF10")
+    ax.legend(fontsize=7, ncols=2)
+    style_axes(ax, square=True)
+    paths += save_all(fig, out_dir, "ratio_compare_mtf50_mtf10", formats, dpi)
+    paths += plot_metric_by_thickness_panels(
+        grouped,
+        "mtf50_lp_per_mm",
+        "MTF50 (lp/mm)",
+        out_dir,
+        "ratio_compare_mtf50_by_thickness_panels",
+        formats,
+        dpi,
+    )
+    paths += plot_metric_by_thickness_panels(
+        grouped,
+        "mtf10_lp_per_mm",
+        "MTF10 (lp/mm)",
+        out_dir,
+        "ratio_compare_mtf10_by_thickness_panels",
+        formats,
+        dpi,
+    )
+    return paths
+
+
+def plot_phase_functions(
+    df: pd.DataFrame, base_dir: Path, out_dir: Path, formats: List[str], dpi: int
+) -> List[Path]:
+    if "phase_function_csv" not in df.columns:
+        return []
+    rows = []
+    for ratio, group in df.groupby("ratio_tag", sort=False, observed=True):
+        paths = [p for p in group["phase_function_csv"].dropna().astype(str).unique() if p.strip()]
+        if not paths:
+            continue
+        path = resolve_existing_path(paths[0], base_dir)
+        if path is None:
+            continue
+        try:
+            phase = load_phase_function(path)
+        except ValueError:
+            continue
+        if phase.empty:
+            continue
+        rows.append((ratio, phase))
+    if not rows:
+        return []
+
+    paths: List[Path] = []
+    fig, ax = plt.subplots(figsize=(5.2, 5.2))
+    for ratio, phase in rows:
+        ax.plot(phase["cos_theta"], phase["phase_function"], linewidth=1.4, label=format_ratio_label(str(ratio)))
+    ax.set_xlabel("cos(theta)")
+    ax.set_ylabel("p(cos(theta))")
+    ax.set_title("Tabulated p(cos(theta))")
+    ax.legend(fontsize=8)
+    style_axes(ax, square=True)
+    paths += save_all(fig, out_dir, "ratio_compare_phase_functions_mu", formats, dpi)
+
+    fig, ax = plt.subplots(figsize=(5.2, 5.2))
+    for ratio, phase in rows:
+        phase_theta = phase_function_with_theta(phase)
+        ax.plot(
+            phase_theta["theta_deg"],
+            phase_theta["phase_function_theta"],
+            linewidth=1.4,
+            label=format_ratio_label(str(ratio)),
+        )
+    ax.set_xlabel("Scattering angle theta (deg)")
+    ax.set_ylabel("p(theta) (per rad)")
+    ax.set_title("Tabulated p(theta)")
+    ax.legend(fontsize=8)
+    style_axes(ax, square=True)
+    paths += save_all(fig, out_dir, "ratio_compare_phase_functions_theta", formats, dpi)
+
+    fig = plt.figure(figsize=(5.2, 5.2))
+    ax = fig.add_subplot(111, projection="polar")
+    for ratio, phase in rows:
+        plot_phase_polar(ax, phase, label=format_ratio_label(str(ratio)))
+    ax.set_title("Polar phase functions", pad=16)
+    ax.legend(fontsize=8, loc="upper right", bbox_to_anchor=(1.18, 1.12))
+    paths += save_all(fig, out_dir, "ratio_compare_phase_functions_polar", formats, dpi)
+
+    fig, axes = plt.subplots(2, 3, figsize=(7.2, 4.8), squeeze=False)
+    for ax in axes.ravel():
+        ax.set_visible(False)
+    for ax, (ratio, phase) in zip(axes.ravel(), rows[:6]):
+        ax.set_visible(True)
+        ax.plot(phase["cos_theta"], phase["phase_function"], linewidth=1.4)
+        ax.set_title(format_ratio_label(str(ratio)), fontsize=9)
+        ax.set_xlabel("cos(theta)")
+        ax.set_ylabel("p(cos(theta))")
+        style_axes(ax, square=True)
+    fig.suptitle("Tabulated p(cos(theta))", y=0.99)
+    fig.tight_layout()
+    paths += save_all(fig, out_dir, "ratio_compare_phase_function_mu_panels", formats, dpi)
+
+    fig, axes = plt.subplots(2, 3, figsize=(7.2, 4.8), squeeze=False)
+    for ax in axes.ravel():
+        ax.set_visible(False)
+    for ax, (ratio, phase) in zip(axes.ravel(), rows[:6]):
+        phase_theta = phase_function_with_theta(phase)
+        ax.set_visible(True)
+        ax.plot(phase_theta["theta_deg"], phase_theta["phase_function_theta"], linewidth=1.4)
+        ax.set_title(format_ratio_label(str(ratio)), fontsize=9)
+        ax.set_xlabel("theta (deg)")
+        ax.set_ylabel("p(theta)")
+        style_axes(ax, square=True)
+    fig.suptitle("Tabulated p(theta)", y=0.99)
+    fig.tight_layout()
+    paths += save_all(fig, out_dir, "ratio_compare_phase_function_theta_panels", formats, dpi)
+
+    fig, axes = plt.subplots(2, 3, figsize=(7.2, 4.8), subplot_kw={"projection": "polar"}, squeeze=False)
+    for ax in axes.ravel():
+        ax.set_visible(False)
+    for ax, (ratio, phase) in zip(axes.ravel(), rows[:6]):
+        ax.set_visible(True)
+        plot_phase_polar(ax, phase)
+        ax.set_title(format_ratio_label(str(ratio)), fontsize=9, pad=10)
+    fig.suptitle("Polar phase functions", y=0.99)
+    fig.tight_layout()
+    paths += save_all(fig, out_dir, "ratio_compare_phase_function_polar_panels", formats, dpi)
+    return paths
+
+
+def plot_phase_polar(ax: plt.Axes, phase: pd.DataFrame, label: Optional[str] = None) -> None:
+    angles, radii = phase_function_polar_curve(phase)
+    ax.plot(angles, radii, linewidth=1.3, label=label)
+    ax.set_theta_zero_location("E")
+    ax.set_theta_direction(1)
+    ax.set_thetamin(-180)
+    ax.set_thetamax(180)
+    ax.grid(True, linewidth=0.6, alpha=0.7)
+    ax.tick_params(direction="in", labelsize=7)
+
+
 def main() -> int:
     args = parse_args()
+    configure_plot_style()
     base_output_dir = args.output_dir or (args.analysis_dir / "ratio_comparison")
     inputs_dir = args.outputs_dir.parent / "inputs"
     if is_relative_to(base_output_dir, inputs_dir):
         raise SystemExit(f"error: refusing to write comparison outputs under raw input directory: {inputs_dir}")
     out_dir = unique_output_dir(base_output_dir, args.overwrite)
 
-    ratios = discover_ratios(args.outputs_dir, args.ratio)
+    ratios = discover_ratios(args.outputs_dir, args.analysis_dir, args.ratio)
     if not ratios:
         print(f"No completed OpticalMC summaries found under {args.outputs_dir}")
         return 1
@@ -323,7 +593,7 @@ def main() -> int:
     frames = []
     skipped = []
     for ratio in ratios:
-        df = load_ratio_summary(args.outputs_dir, ratio)
+        df = load_ratio_summary(args.outputs_dir, args.analysis_dir, ratio, args.light_scale)
         if df.empty:
             skipped.append(ratio)
             continue
@@ -341,6 +611,26 @@ def main() -> int:
         raise SystemExit("error: no detected light column found in summaries")
 
     paths: List[Path] = [write_plot_data(combined, out_dir, light_col)]
+    if "readout_light_per_million_incident" in combined.columns:
+        paths += plot_metric(
+            combined,
+            "readout_light_per_million_incident",
+            "Readout light / 1e6 incident neutrons",
+            "Relative readout light by ratio",
+            out_dir,
+            "ratio_compare_readout_light_per_million_incident",
+            args.formats,
+            args.dpi,
+        )
+        paths += plot_metric_by_thickness_panels(
+            combined,
+            "readout_light_per_million_incident",
+            "Readout light / 1e6 incident neutrons",
+            out_dir,
+            "ratio_compare_readout_light_by_thickness_panels",
+            args.formats,
+            args.dpi,
+        )
     paths += plot_metric(
         combined,
         light_col,
@@ -384,7 +674,18 @@ def main() -> int:
             args.formats,
             args.dpi,
         )
+        paths += plot_metric_by_thickness_panels(
+            combined,
+            "fwhm_mean",
+            "Mean FWHM (um)",
+            out_dir,
+            "ratio_compare_fwhm_by_thickness_panels",
+            args.formats,
+            args.dpi,
+        )
     paths += plot_summary_grid(combined, light_col, out_dir, args.formats, args.dpi)
+    paths += plot_mtf_comparison(load_mtf_metrics(args.outputs_dir, args.analysis_dir, args.ratio), out_dir, args.formats, args.dpi)
+    paths += plot_phase_functions(combined, args.outputs_dir.parent, out_dir, args.formats, args.dpi)
 
     for path in paths:
         print(f"wrote,{path}")

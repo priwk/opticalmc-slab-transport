@@ -16,12 +16,22 @@ import numpy as np
 import pandas as pd
 
 from common import (
+    READOUT_LIGHT_SCALE_DEFAULT,
+    add_plot_metrics,
+    configure_plot_style,
     crossing_frequency,
     discover_runs,
     ensure_dir,
     load_lsf,
+    load_phase_function,
     normalized_mtf_from_lsf,
+    phase_function_polar_curve,
+    phase_function_with_theta,
     read_summary,
+    resolve_existing_path,
+    select_panel_thicknesses,
+    style_axes,
+    style_figure_axes,
     thickness_label,
 )
 
@@ -40,6 +50,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-psf", action="store_true", help="Skip PSF heatmaps.")
     parser.add_argument("--no-depth", action="store_true", help="Skip event depth plots.")
     parser.add_argument("--dpi", type=int, default=180)
+    parser.add_argument(
+        "--light-scale",
+        type=float,
+        default=READOUT_LIGHT_SCALE_DEFAULT,
+        help="Scale for readout light per incident neutron. Defaults to 1000000.",
+    )
     return parser.parse_args()
 
 
@@ -57,6 +73,7 @@ def requested_thickness(values: Optional[List[str]]) -> Optional[set[float]]:
 
 def savefig(path: Path, dpi: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    style_figure_axes(plt.gcf())
     plt.tight_layout()
     plt.savefig(path, dpi=dpi)
     plt.close()
@@ -78,25 +95,46 @@ def plot_thickness_trends(summary: pd.DataFrame, fig_dir: Path, dpi: int) -> Non
         df = df.sort_values("thickness_um")
         x = df["thickness_um"].to_numpy(dtype=float)
 
-        plt.figure(figsize=(7.2, 4.6))
+        if "readout_light_per_million_incident" in df.columns:
+            plt.figure(figsize=(7.2, 4.8))
+            plt.plot(x, df["readout_light_per_million_incident"], "o-", linewidth=1.8)
+            plt.xlabel("Thickness (um)")
+            plt.ylabel("Readout light / 1e6 incident neutrons")
+            plt.title(f"{ratio} readout light")
+            savefig(fig_dir / ratio / "thickness_readout_light_per_million_incident.png", dpi)
+
+        plt.figure(figsize=(7.2, 4.8))
         plt.plot(x, df["detection_efficiency"], "o-", label="detected / source")
         plt.xlabel("Thickness (um)")
         plt.ylabel("Detection efficiency")
         plt.title(f"{ratio} detection efficiency")
-        plt.grid(True, alpha=0.3)
         savefig(fig_dir / ratio / "thickness_detection_efficiency.png", dpi)
 
-        plt.figure(figsize=(7.2, 4.6))
+        plt.figure(figsize=(7.2, 4.8))
         plt.plot(x, df["mean_light_per_capture"], "o-", label="source")
         plt.plot(x, df["mean_detected_light_per_capture"], "s-", label="detected")
         plt.xlabel("Thickness (um)")
         plt.ylabel("Mean photons per capture")
         plt.title(f"{ratio} light yield per capture")
         plt.legend()
-        plt.grid(True, alpha=0.3)
         savefig(fig_dir / ratio / "thickness_light_per_capture.png", dpi)
 
-        plt.figure(figsize=(7.2, 4.6))
+        plt.figure(figsize=(5.2, 5.2))
+        if "fwhm_mean" in df:
+            plt.plot(x, df["fwhm_mean"], "o-", linewidth=1.8, label="Mean FWHM")
+        if "fwhm_x" in df:
+            plt.plot(x, df["fwhm_x"], "s--", linewidth=1.2, label="FWHM x")
+        if "fwhm_y" in df:
+            plt.plot(x, df["fwhm_y"], "^--", linewidth=1.2, label="FWHM y")
+        plt.xlabel("Thickness (um)")
+        plt.ylabel("FWHM (um)")
+        plt.title(f"{ratio} FWHM")
+        plt.legend()
+        ax = plt.gca()
+        style_axes(ax, square=True)
+        savefig(fig_dir / ratio / "thickness_fwhm.png", dpi)
+
+        plt.figure(figsize=(5.2, 5.2))
         plt.plot(x, df["spot_rms_r"], "o-", label="RMS r")
         if "fwhm_x" in df:
             plt.plot(x, df["fwhm_x"], "s-", label="FWHM x")
@@ -106,7 +144,8 @@ def plot_thickness_trends(summary: pd.DataFrame, fig_dir: Path, dpi: int) -> Non
         plt.ylabel("Spot size (um)")
         plt.title(f"{ratio} spot spread")
         plt.legend()
-        plt.grid(True, alpha=0.3)
+        ax = plt.gca()
+        style_axes(ax, square=True)
         savefig(fig_dir / ratio / "thickness_spot_spread.png", dpi)
 
         total = df["total_source_weight"].replace(0, np.nan)
@@ -118,7 +157,7 @@ def plot_thickness_trends(summary: pd.DataFrame, fig_dir: Path, dpi: int) -> Non
                 "lost": df["lost_weight"] / total,
             }
         )
-        plt.figure(figsize=(7.2, 4.6))
+        plt.figure(figsize=(7.2, 4.8))
         bottom = np.zeros(len(df))
         for name, color in [
             ("front_escape", "#4C78A8"),
@@ -133,7 +172,6 @@ def plot_thickness_trends(summary: pd.DataFrame, fig_dir: Path, dpi: int) -> Non
         plt.ylabel("Weight fraction")
         plt.title(f"{ratio} photon budget")
         plt.legend()
-        plt.grid(True, axis="y", alpha=0.3)
         savefig(fig_dir / ratio / "thickness_photon_budget.png", dpi)
 
 
@@ -169,7 +207,6 @@ def depth_binned_event_plot(runs: pd.DataFrame, fig_dir: Path, dpi: int) -> None
             plt.ylabel("Mean event detection efficiency")
             plt.title(f"{ratio} depth dependence")
             plt.legend(fontsize=8, ncols=2)
-            plt.grid(True, alpha=0.3)
             savefig(fig_dir / ratio / "event_depth_detection_efficiency.png", dpi)
         else:
             plt.close()
@@ -206,7 +243,6 @@ def plot_lsf_mtf(runs: pd.DataFrame, fig_dir: Path, table_dir: Path, dpi: int, s
             plt.xlabel(f"{axis} position (um)")
             plt.ylabel("Detected weight")
             plt.title(f"{ratio} {label} um LSF-{axis}")
-            plt.grid(True, alpha=0.3)
             savefig(fig_dir / ratio / "lsf" / f"lsf_{axis}_{label}um.png", dpi)
 
             if not mtf.empty:
@@ -220,7 +256,6 @@ def plot_lsf_mtf(runs: pd.DataFrame, fig_dir: Path, table_dir: Path, dpi: int, s
                 plt.xlabel("Spatial frequency (lp/mm)")
                 plt.ylabel("MTF")
                 plt.title(f"{ratio} {label} um MTF-{axis}")
-                plt.grid(True, alpha=0.3)
                 savefig(fig_dir / ratio / "mtf" / f"mtf_{axis}_{label}um.png", dpi)
 
     if mtf_rows:
@@ -229,6 +264,7 @@ def plot_lsf_mtf(runs: pd.DataFrame, fig_dir: Path, table_dir: Path, dpi: int, s
         mtf_df.to_csv(out, index=False)
         print(f"wrote {out}")
         plot_mtf_threshold_trends(mtf_df, fig_dir, dpi)
+        plot_lsf_thickness_panels(runs, fig_dir, dpi, selected)
 
 
 def plot_mtf_threshold_trends(mtf_df: pd.DataFrame, fig_dir: Path, dpi: int) -> None:
@@ -242,11 +278,10 @@ def plot_mtf_threshold_trends(mtf_df: pd.DataFrame, fig_dir: Path, dpi: int) -> 
         )
         if grouped.empty:
             continue
-        plt.figure(figsize=(7.2, 4.6))
+        plt.figure(figsize=(5.2, 5.2))
         for col, label, marker in [
             ("mtf50_lp_per_mm", "MTF50", "o"),
-            ("mtf20_lp_per_mm", "MTF20", "s"),
-            ("mtf10_lp_per_mm", "MTF10", "^"),
+            ("mtf10_lp_per_mm", "MTF10", "s"),
         ]:
             values = grouped[col].to_numpy(dtype=float)
             if np.isfinite(values).any():
@@ -261,8 +296,55 @@ def plot_mtf_threshold_trends(mtf_df: pd.DataFrame, fig_dir: Path, dpi: int) -> 
         plt.ylabel("Spatial frequency (lp/mm)")
         plt.title(f"{ratio} MTF thresholds vs thickness")
         plt.legend()
-        plt.grid(True, alpha=0.3)
+        ax = plt.gca()
+        style_axes(ax, square=True)
         savefig(fig_dir / ratio / "thickness_mtf_thresholds.png", dpi)
+
+
+def plot_lsf_thickness_panels(
+    runs: pd.DataFrame, fig_dir: Path, dpi: int, selected: Optional[set[float]]
+) -> None:
+    for ratio, ratio_runs in runs.groupby("ratio_tag"):
+        available = ratio_runs.sort_values("thickness_um")
+        if selected is not None:
+            available = available[available["thickness_um"].astype(float).isin(selected)]
+        panel_thicknesses = select_panel_thicknesses(available["thickness_um"], 6)
+        if not panel_thicknesses:
+            continue
+        for axis, column in [("x", "lsf_x_csv"), ("y", "lsf_y_csv")]:
+            fig, axes = plt.subplots(2, 3, figsize=(7.2, 4.8), squeeze=False)
+            wrote_any = False
+            for ax in axes.ravel():
+                ax.set_visible(False)
+            for ax, thickness in zip(axes.ravel(), panel_thicknesses):
+                match = available[np.isclose(available["thickness_um"].astype(float), thickness)]
+                if match.empty:
+                    continue
+                path = Path(str(match.iloc[0][column]))
+                if not path.exists():
+                    continue
+                lsf = load_lsf(path)
+                if lsf.empty:
+                    continue
+                y = lsf["weight"].to_numpy(dtype=float)
+                max_y = np.nanmax(y) if len(y) else np.nan
+                if np.isfinite(max_y) and max_y > 0:
+                    y = y / max_y
+                ax.set_visible(True)
+                ax.plot(lsf["position_um"], y, linewidth=1.4)
+                ax.set_title(f"{thickness_label(thickness)} um", fontsize=9)
+                ax.set_xlabel(f"{axis} (um)")
+                ax.set_ylabel("LSF / max")
+                style_axes(ax, square=True)
+                wrote_any = True
+            if wrote_any:
+                fig.suptitle(f"{ratio} LSF-{axis} vs thickness", y=0.99)
+                fig.tight_layout()
+                path = fig_dir / ratio / "lsf" / f"lsf_{axis}_thickness_panels.png"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                fig.savefig(path, dpi=dpi)
+                print(f"wrote {path}")
+            plt.close(fig)
 
 
 def plot_psf(runs: pd.DataFrame, fig_dir: Path, dpi: int, selected: Optional[set[float]]) -> None:
@@ -291,10 +373,190 @@ def plot_psf(runs: pd.DataFrame, fig_dir: Path, dpi: int, selected: Optional[set
         plt.ylabel("y (um)")
         plt.title(f"{run.ratio_tag} {thickness_label(run.thickness_um)} um PSF")
         savefig(fig_dir / run.ratio_tag / "psf" / f"psf_2d_{thickness_label(run.thickness_um)}um.png", dpi)
+    plot_psf_thickness_panels(runs, fig_dir, dpi, selected)
+
+
+def plot_psf_thickness_panels(
+    runs: pd.DataFrame, fig_dir: Path, dpi: int, selected: Optional[set[float]]
+) -> None:
+    for ratio, ratio_runs in runs.groupby("ratio_tag"):
+        available = ratio_runs.sort_values("thickness_um")
+        if selected is not None:
+            available = available[available["thickness_um"].astype(float).isin(selected)]
+        panel_thicknesses = select_panel_thicknesses(available["thickness_um"], 6)
+        if not panel_thicknesses:
+            continue
+        fig, axes = plt.subplots(2, 3, figsize=(7.2, 4.8), squeeze=False)
+        wrote_any = False
+        for ax in axes.ravel():
+            ax.set_visible(False)
+        for ax, thickness in zip(axes.ravel(), panel_thicknesses):
+            match = available[np.isclose(available["thickness_um"].astype(float), thickness)]
+            if match.empty:
+                continue
+            path = Path(str(match.iloc[0]["psf_2d_csv"]))
+            if not path.exists():
+                continue
+            df = pd.read_csv(path)
+            if df.empty:
+                continue
+            xs = np.sort(df["x_bin_center_um"].unique())
+            ys = np.sort(df["y_bin_center_um"].unique())
+            image = (
+                df.pivot(index="y_bin_center_um", columns="x_bin_center_um", values="weight")
+                .reindex(index=ys, columns=xs)
+                .fillna(0)
+            )
+            ax.set_visible(True)
+            ax.imshow(
+                image.to_numpy(dtype=float),
+                origin="lower",
+                extent=[xs.min(), xs.max(), ys.min(), ys.max()],
+                aspect="equal",
+                cmap="viridis",
+            )
+            ax.set_title(f"{thickness_label(thickness)} um", fontsize=9)
+            ax.set_xlabel("x (um)")
+            ax.set_ylabel("y (um)")
+            style_axes(ax, square=True)
+            wrote_any = True
+        if wrote_any:
+            fig.suptitle(f"{ratio} PSF vs thickness", y=0.99)
+            fig.tight_layout()
+            path = fig_dir / ratio / "psf" / "psf_2d_thickness_panels.png"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(path, dpi=dpi)
+            print(f"wrote {path}")
+        plt.close(fig)
+
+
+def plot_phase_functions(summary: pd.DataFrame, fig_dir: Path, dpi: int, base_dir: Path) -> None:
+    phase_rows = []
+    for ratio, df in summary.groupby("ratio_tag"):
+        if "phase_function_csv" not in df.columns:
+            continue
+        phase_paths = [p for p in df["phase_function_csv"].dropna().astype(str).unique() if p.strip()]
+        if not phase_paths:
+            continue
+        path = resolve_existing_path(phase_paths[0], base_dir)
+        if path is None:
+            continue
+        try:
+            phase = load_phase_function(path)
+        except ValueError:
+            continue
+        if phase.empty:
+            continue
+        phase_rows.append((ratio, phase))
+        phase_theta = phase_function_with_theta(phase)
+
+        fig, ax = plt.subplots(figsize=(5.2, 5.2))
+        ax.plot(phase["cos_theta"], phase["phase_function"], linewidth=1.8)
+        ax.set_xlabel("cos(theta)")
+        ax.set_ylabel("p(cos(theta))")
+        ax.set_title(f"{ratio} p(cos(theta))")
+        style_axes(ax, square=True)
+        out = fig_dir / ratio / "phase_function_mu.png"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        fig.tight_layout()
+        fig.savefig(out, dpi=dpi)
+        plt.close(fig)
+        print(f"wrote {out}")
+
+        fig, ax = plt.subplots(figsize=(5.2, 5.2))
+        ax.plot(phase_theta["theta_deg"], phase_theta["phase_function_theta"], linewidth=1.8)
+        ax.set_xlabel("Scattering angle theta (deg)")
+        ax.set_ylabel("p(theta) (per rad)")
+        ax.set_title(f"{ratio} p(theta)")
+        style_axes(ax, square=True)
+        out = fig_dir / ratio / "phase_function_theta.png"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        fig.tight_layout()
+        fig.savefig(out, dpi=dpi)
+        plt.close(fig)
+        print(f"wrote {out}")
+
+        fig = plt.figure(figsize=(5.2, 5.2))
+        ax = fig.add_subplot(111, projection="polar")
+        plot_phase_polar(ax, phase)
+        ax.set_title(f"{ratio} polar phase function", pad=16)
+        out = fig_dir / ratio / "phase_function_polar.png"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        fig.tight_layout()
+        fig.savefig(out, dpi=dpi)
+        plt.close(fig)
+        print(f"wrote {out}")
+
+    if not phase_rows:
+        return
+    panel_items = phase_rows[:6]
+    fig, axes = plt.subplots(2, 3, figsize=(7.2, 4.8), squeeze=False)
+    for ax in axes.ravel():
+        ax.set_visible(False)
+    for ax, (ratio, phase) in zip(axes.ravel(), panel_items):
+        ax.set_visible(True)
+        ax.plot(phase["cos_theta"], phase["phase_function"], linewidth=1.4)
+        ax.set_title(str(ratio), fontsize=9)
+        ax.set_xlabel("cos(theta)")
+        ax.set_ylabel("p(cos(theta))")
+        style_axes(ax, square=True)
+    fig.suptitle("Tabulated p(cos(theta))", y=0.99)
+    fig.tight_layout()
+    out = fig_dir / "phase_functions_mu_panels.png"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=dpi)
+    plt.close(fig)
+    print(f"wrote {out}")
+
+    fig, axes = plt.subplots(2, 3, figsize=(7.2, 4.8), squeeze=False)
+    for ax in axes.ravel():
+        ax.set_visible(False)
+    for ax, (ratio, phase) in zip(axes.ravel(), panel_items):
+        phase_theta = phase_function_with_theta(phase)
+        ax.set_visible(True)
+        ax.plot(phase_theta["theta_deg"], phase_theta["phase_function_theta"], linewidth=1.4)
+        ax.set_title(str(ratio), fontsize=9)
+        ax.set_xlabel("theta (deg)")
+        ax.set_ylabel("p(theta)")
+        style_axes(ax, square=True)
+    fig.suptitle("Tabulated p(theta)", y=0.99)
+    fig.tight_layout()
+    out = fig_dir / "phase_functions_theta_panels.png"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=dpi)
+    plt.close(fig)
+    print(f"wrote {out}")
+
+    fig, axes = plt.subplots(2, 3, figsize=(7.2, 4.8), subplot_kw={"projection": "polar"}, squeeze=False)
+    for ax in axes.ravel():
+        ax.set_visible(False)
+    for ax, (ratio, phase) in zip(axes.ravel(), panel_items):
+        ax.set_visible(True)
+        plot_phase_polar(ax, phase)
+        ax.set_title(str(ratio), fontsize=9, pad=10)
+    fig.suptitle("Polar phase functions", y=0.99)
+    fig.tight_layout()
+    out = fig_dir / "phase_functions_polar_panels.png"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=dpi)
+    plt.close(fig)
+    print(f"wrote {out}")
+
+
+def plot_phase_polar(ax: plt.Axes, phase: pd.DataFrame) -> None:
+    angles, radii = phase_function_polar_curve(phase)
+    ax.plot(angles, radii, linewidth=1.4)
+    ax.set_theta_zero_location("E")
+    ax.set_theta_direction(1)
+    ax.set_thetamin(-180)
+    ax.set_thetamax(180)
+    ax.grid(True, linewidth=0.6, alpha=0.7)
+    ax.tick_params(direction="in")
 
 
 def main() -> int:
     args = parse_args()
+    configure_plot_style()
     runs = discover_runs(args.outputs_dir, args.ratio)
     if runs.empty:
         print(f"No completed OpticalMC runs found under {args.outputs_dir}")
@@ -303,7 +565,7 @@ def main() -> int:
     fig_dir = ensure_dir(args.analysis_dir / "figures")
     table_dir = ensure_dir(args.analysis_dir / "tables")
 
-    summary = collect_summary(runs)
+    summary = add_plot_metrics(collect_summary(runs), args.light_scale)
     summary.to_csv(table_dir / "summary_for_plots.csv", index=False)
     plot_thickness_trends(summary, fig_dir, args.dpi)
     plot_lsf_mtf(runs, fig_dir, table_dir, args.dpi, selected)
@@ -311,6 +573,7 @@ def main() -> int:
         depth_binned_event_plot(runs, fig_dir, args.dpi)
     if not args.no_psf:
         plot_psf(runs, fig_dir, args.dpi, selected)
+    plot_phase_functions(summary, fig_dir, args.dpi, args.outputs_dir.parent)
     return 0
 
 

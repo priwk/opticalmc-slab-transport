@@ -9,6 +9,9 @@ import numpy as np
 import pandas as pd
 
 
+READOUT_LIGHT_SCALE_DEFAULT = 1_000_000.0
+
+
 def thickness_from_dir(path: Path) -> Optional[float]:
     try:
         return float(path.name)
@@ -18,6 +21,220 @@ def thickness_from_dir(path: Path) -> Optional[float]:
 
 def thickness_label(value: float) -> str:
     return f"{value:.12g}"
+
+
+def configure_plot_style(font_dir: Optional[Path] = None) -> None:
+    """Configure Matplotlib for boxed, inward-tick, local-font figures."""
+    import matplotlib as mpl
+    from matplotlib import font_manager
+
+    font_dir = font_dir or Path(__file__).resolve().parent / "fonts"
+    local_fonts = [
+        font_dir / "arial.ttf",
+        font_dir / "Deng.ttf",
+    ]
+    for font_path in local_fonts:
+        if font_path.exists():
+            font_manager.fontManager.addfont(str(font_path))
+
+    mpl.rcParams.update(
+        {
+            "font.family": "sans-serif",
+            "font.sans-serif": ["Arial", "DengXian"],
+            "axes.unicode_minus": False,
+            "axes.linewidth": 1.0,
+            "axes.spines.top": True,
+            "axes.spines.right": True,
+            "xtick.direction": "in",
+            "ytick.direction": "in",
+            "xtick.top": True,
+            "ytick.right": True,
+            "xtick.major.width": 1.0,
+            "ytick.major.width": 1.0,
+            "xtick.minor.width": 0.8,
+            "ytick.minor.width": 0.8,
+            "legend.frameon": False,
+            "pdf.fonttype": 42,
+            "ps.fonttype": 42,
+            "svg.fonttype": "none",
+        }
+    )
+
+
+def style_axes(ax, square: bool = False, grid: bool = False) -> None:
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(1.0)
+    ax.tick_params(direction="in", top=True, right=True, which="both")
+    if grid:
+        ax.grid(True, color="#d9d9d9", linewidth=0.6, alpha=0.7)
+    else:
+        ax.grid(False)
+    if square and hasattr(ax, "set_box_aspect"):
+        ax.set_box_aspect(1)
+
+
+def style_figure_axes(fig, square: bool = False, grid: bool = False) -> None:
+    for ax in fig.axes:
+        style_axes(ax, square=square, grid=grid)
+
+
+def add_plot_metrics(df: pd.DataFrame, light_scale: float = READOUT_LIGHT_SCALE_DEFAULT) -> pd.DataFrame:
+    if df.empty:
+        return df
+    out = df.copy()
+    numeric_columns = [
+        "thickness_um",
+        "mean_detected_light_per_incident",
+        "mean_detected_light_per_capture",
+        "mean_light_per_incident",
+        "mean_light_per_capture",
+        "incident_event_count",
+        "detection_efficiency",
+        "capture_fraction",
+        "spot_rms_x",
+        "spot_rms_y",
+        "spot_rms_r",
+        "fwhm_x",
+        "fwhm_y",
+    ]
+    for column in numeric_columns:
+        if column in out.columns:
+            out[column] = pd.to_numeric(out[column], errors="coerce")
+
+    if "fwhm_mean" not in out.columns and {"fwhm_x", "fwhm_y"}.issubset(out.columns):
+        out["fwhm_mean"] = out[["fwhm_x", "fwhm_y"]].mean(axis=1)
+    if "detection_efficiency_percent" not in out.columns and "detection_efficiency" in out.columns:
+        out["detection_efficiency_percent"] = 100.0 * out["detection_efficiency"]
+    if "capture_fraction_percent" not in out.columns and "capture_fraction" in out.columns:
+        out["capture_fraction_percent"] = 100.0 * out["capture_fraction"]
+
+    light_col = detected_light_column(out)
+    if light_col is not None:
+        out["readout_light_per_incident"] = out[light_col]
+        if light_col == "mean_detected_light_per_incident":
+            out["readout_light_per_million_incident"] = out[light_col] * light_scale
+        elif "incident_event_count" in out.columns:
+            out["readout_light_per_million_incident"] = (
+                out[light_col] * out.get("capture_fraction", 1.0) * light_scale
+            )
+        else:
+            out["readout_light_per_million_incident"] = out[light_col] * light_scale
+        max_value = out["readout_light_per_million_incident"].max(skipna=True)
+        out["readout_light_relative"] = (
+            out["readout_light_per_million_incident"] / max_value if max_value and max_value > 0 else np.nan
+        )
+    return out
+
+
+def detected_light_column(df: pd.DataFrame) -> Optional[str]:
+    if "mean_detected_light_per_incident" in df.columns:
+        return "mean_detected_light_per_incident"
+    if "mean_detected_light_per_capture" in df.columns:
+        return "mean_detected_light_per_capture"
+    return None
+
+
+def select_panel_thicknesses(values: Iterable[float], max_count: int = 6) -> List[float]:
+    unique = sorted({float(v) for v in values if pd.notna(v)})
+    if len(unique) <= max_count:
+        return unique
+    indices = np.linspace(0, len(unique) - 1, max_count).round().astype(int)
+    return [unique[int(i)] for i in sorted(set(indices))]
+
+
+def resolve_existing_path(path_value: object, base_dir: Path) -> Optional[Path]:
+    if path_value is None or (isinstance(path_value, float) and math.isnan(path_value)):
+        return None
+    text = str(path_value).strip()
+    if not text:
+        return None
+    path = Path(text)
+    candidates = [path]
+    if not path.is_absolute():
+        candidates.append(base_dir / path)
+        candidates.append(Path.cwd() / path)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def load_phase_function(path: Path) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    if {"cos_theta_min", "cos_theta_max"}.issubset(df.columns):
+        cos_theta_min = pd.to_numeric(df["cos_theta_min"], errors="coerce")
+        cos_theta_max = pd.to_numeric(df["cos_theta_max"], errors="coerce")
+        cos_theta = 0.5 * (cos_theta_min + cos_theta_max)
+    elif "cos_theta" in df.columns:
+        cos_theta_min = None
+        cos_theta_max = None
+        cos_theta = pd.to_numeric(df["cos_theta"], errors="coerce")
+    elif "mu" in df.columns:
+        cos_theta_min = None
+        cos_theta_max = None
+        cos_theta = pd.to_numeric(df["mu"], errors="coerce")
+    else:
+        raise ValueError(f"{path} does not contain cos(theta) columns")
+
+    for column in ("probability_density_mean", "probability_density", "probability_mean", "probability", "weight"):
+        if column in df.columns:
+            values = pd.to_numeric(df[column], errors="coerce")
+            break
+    else:
+        raise ValueError(f"{path} does not contain phase-function probability columns")
+
+    out = pd.DataFrame({"cos_theta": cos_theta, "phase_function": values})
+    if cos_theta_min is not None and cos_theta_max is not None:
+        out["cos_theta_min"] = cos_theta_min
+        out["cos_theta_max"] = cos_theta_max
+    return out.dropna().sort_values("cos_theta").reset_index(drop=True)
+
+
+def phase_function_with_theta(phase: pd.DataFrame) -> pd.DataFrame:
+    out = phase.copy()
+    mu = np.clip(out["cos_theta"].to_numpy(dtype=float), -1.0, 1.0)
+    theta_rad = np.arccos(mu)
+    out["theta_deg"] = np.degrees(theta_rad)
+    out["phase_function_theta"] = out["phase_function"].to_numpy(dtype=float) * np.sin(theta_rad)
+    return out.sort_values("theta_deg").reset_index(drop=True)
+
+
+def phase_function_polar_curve(phase: pd.DataFrame, samples_per_bin: int = 12) -> tuple[np.ndarray, np.ndarray]:
+    if {"cos_theta_min", "cos_theta_max"}.issubset(phase.columns):
+        rows = []
+        for row in phase.itertuples(index=False):
+            mu_min = float(getattr(row, "cos_theta_min"))
+            mu_max = float(getattr(row, "cos_theta_max"))
+            radius = float(getattr(row, "phase_function"))
+            theta_low = math.acos(float(np.clip(max(mu_min, mu_max), -1.0, 1.0)))
+            theta_high = math.acos(float(np.clip(min(mu_min, mu_max), -1.0, 1.0)))
+            rows.append((theta_low, theta_high, radius))
+        rows.sort(key=lambda item: item[0])
+
+        theta_pos: List[float] = []
+        radius_pos: List[float] = []
+        for theta_low, theta_high, radius in rows:
+            segment = np.linspace(theta_low, theta_high, max(2, samples_per_bin))
+            theta_pos.extend(segment.tolist())
+            radius_pos.extend([radius] * len(segment))
+            theta_pos.append(theta_high)
+            radius_pos.append(radius)
+        theta_arr = np.asarray(theta_pos, dtype=float)
+        radius_arr = np.asarray(radius_pos, dtype=float)
+    else:
+        theta_arr = np.arccos(np.clip(phase["cos_theta"].to_numpy(dtype=float), -1.0, 1.0))
+        radius_arr = phase["phase_function"].to_numpy(dtype=float)
+        order = np.argsort(theta_arr)
+        theta_arr = theta_arr[order]
+        radius_arr = radius_arr[order]
+        if len(theta_arr):
+            theta_arr = np.r_[0.0, theta_arr, math.pi]
+            radius_arr = np.r_[radius_arr[0], radius_arr, radius_arr[-1]]
+
+    angles = np.concatenate((-theta_arr[:0:-1], theta_arr))
+    radii = np.concatenate((radius_arr[:0:-1], radius_arr))
+    return angles, radii
 
 
 RUN_TAG_SEPARATOR = "__"

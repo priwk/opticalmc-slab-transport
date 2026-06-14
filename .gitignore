@@ -20,6 +20,10 @@ outputs/
 analysis_results/
 inputs/
 
+# Local font copies for figure rendering. Do not publish proprietary system fonts.
+analysis/fonts/*.ttf
+analysis/fonts/*.ttc
+
 # Local editor and OS files
 .idea/
 .vscode/

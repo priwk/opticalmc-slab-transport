@@ -9,7 +9,7 @@ The mask image must be square and black/white. It is mapped onto neutron source 
 the image covers `x = +/-5000 um` and `y = +/-5000 um`; white pixels pass, black interior
 pixels block, and black edge pixels are treated as usable boundary events.
 
-Example:
+Single-run example:
 
 ```powershell
 python .\mask_imaging\run_mask_imaging.py `
@@ -20,6 +20,30 @@ python .\mask_imaging\run_mask_imaging.py `
   --num-threads 8
 ```
 
+Batch example for every ratio with available StageB and optical-parameter inputs:
+
+```powershell
+python .\mask_imaging\run_mask_imaging.py `
+  --mask-image .\masks\SYSU.png `
+  --samples-per-step 16 `
+  --num-threads 8
+```
+
+The batch default thicknesses are:
+
+```text
+50 100 200 500 um
+```
+
+You can override them:
+
+```powershell
+python .\mask_imaging\run_mask_imaging.py `
+  --mask-image .\masks\SYSU.png `
+  --ratio 1-1 1-3 `
+  --thickness 50 100 200 500
+```
+
 Main outputs are written to:
 
 ```text
@@ -27,7 +51,13 @@ outputs/mask_imaging/<ratio>/<thickness>/
   detected_photon_positions.csv
   photon_hit_map.png
   simulated_radiograph.png
+
+outputs/mask_imaging/<ratio>/
+  radiograph_strip_50_100_200_500um.png
 ```
+
+The strip image places the four simulated radiographs in one horizontal row. Each panel is
+drawn as a square.
 
 Large intermediate source/event files and raw OpticalMC summary files are created in a
 temporary directory and removed when the run finishes. Add `--keep-intermediates` only when
