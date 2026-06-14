@@ -35,6 +35,18 @@ The batch default thicknesses are:
 50 100 200 500 um
 ```
 
+The mask is a transmission model, not a hard deletion model. Defaults:
+
+```text
+white_transmission = 1.0
+black_transmission = 0.05
+edge_transmission = 0.2
+```
+
+Black mask regions therefore keep 5% of the neutron-source contribution by default. The
+filtered StageB anchor file carries this as `mask_transmission`, and the source
+`trajectory_weight` is scaled before OpticalMC is launched.
+
 You can override them:
 
 ```powershell
@@ -50,14 +62,25 @@ Main outputs are written to:
 outputs/mask_imaging/<ratio>/<thickness>/
   detected_photon_positions.csv
   photon_hit_map.png
+  radiograph_histogram.npy
   simulated_radiograph.png
+  simulated_radiograph_contrast.png
+  image_metrics.csv
+  mask_transmission_summary.csv
+  mask_transmission_summary.json
 
 outputs/mask_imaging/<ratio>/
   radiograph_strip_50_100_200_500um.png
+  radiograph_strip_50_100_200_500um_contrast.png
+  radiograph_strip_50_100_200_500um_ratio_to_50um.png
+  radiograph_strip_50_100_200_500um_relative_difference_to_50um.png
+  metrics_50_100_200_500um.csv
 ```
 
 The strip image places the four simulated radiographs in one horizontal row. Each panel is
-drawn as a square.
+drawn as a square. The default strip uses a shared display normalization across the four
+thicknesses so that brightness differences are not independently rescaled away. The contrast,
+ratio, and relative-difference strips are display-enhanced outputs for visual comparison.
 
 `masks/` is only the input-mask directory. It is not used for outputs unless you explicitly
 pass `--output-dir`.
@@ -99,6 +122,8 @@ Useful options:
 --raw-bin-size-um 25       Bin size for photon_hit_map.png.
 --image-pixels 512         Pixel width/height for simulated_radiograph.png.
 --blur-sigma-px 1.2        Gaussian blur applied to simulated_radiograph.png.
---block-mask-edge          Treat every black pixel as blocked, including edges.
+--block-mask-edge          Treat black edge pixels with black-transmission instead of edge-transmission.
+--black-transmission 0.05  Transmission assigned to black mask interiors.
+--edge-transmission 0.2    Transmission assigned to black edge pixels.
 --outside-mask block       Block source positions outside the mask coordinate range.
 ```

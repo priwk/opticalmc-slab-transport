@@ -122,10 +122,13 @@ def parse_args() -> argparse.Namespace:
         help="Mask image covers source_x/source_y from -range to +range um.",
     )
     parser.add_argument("--mask-threshold", type=float, default=0.5)
+    parser.add_argument("--white-transmission", type=float, default=1.0)
+    parser.add_argument("--black-transmission", type=float, default=0.05)
+    parser.add_argument("--edge-transmission", type=float, default=0.2)
     parser.add_argument(
         "--block-mask-edge",
         action="store_true",
-        help="Block all black pixels. By default, black pixels touching white/outside are treated as usable edges.",
+        help="Use black-transmission for all black pixels. By default, black edge pixels use edge-transmission.",
     )
     parser.add_argument("--outside-mask", choices=("allow", "block"), default="allow")
     parser.add_argument(
@@ -193,7 +196,7 @@ def selected_thicknesses(args: argparse.Namespace) -> List[str]:
     return out
 
 
-def read_mask(path: Path, threshold: float, block_edge: bool) -> np.ndarray:
+def read_mask_luminance(path: Path) -> np.ndarray:
     image = mpimg.imread(path)
     if image.ndim == 3:
         rgb = image[..., :3].astype(float)
@@ -204,16 +207,24 @@ def read_mask(path: Path, threshold: float, block_edge: bool) -> np.ndarray:
         luminance = luminance / 255.0
     if luminance.shape[0] != luminance.shape[1]:
         raise ValueError(f"Mask image must be square; got {luminance.shape[1]}x{luminance.shape[0]}.")
-    black = luminance < threshold
-    if block_edge:
-        return black
+    return luminance
+
+
+def read_mask_transmission(args: argparse.Namespace) -> np.ndarray:
+    luminance = read_mask_luminance(args.mask_image)
+    black = luminance < args.mask_threshold
+    transmission = np.where(black, args.black_transmission, args.white_transmission).astype(float)
+    if args.block_mask_edge:
+        return transmission
 
     padded = np.pad(black, 1, mode="constant", constant_values=False)
     interior = black.copy()
     for dy in (-1, 0, 1):
         for dx in (-1, 0, 1):
             interior &= padded[1 + dy : 1 + dy + black.shape[0], 1 + dx : 1 + dx + black.shape[1]]
-    return interior
+    edge = black & ~interior
+    transmission[edge] = args.edge_transmission
+    return np.clip(transmission, 0.0, None)
 
 
 def source_pixel(x_um: float, y_um: float, half_range_um: float, n: int) -> Optional[Tuple[int, int]]:
@@ -245,24 +256,24 @@ def source_columns(fieldnames: Sequence[str]) -> Tuple[str, str, bool]:
     )
 
 
-def allowed_by_mask(
+def transmission_at_source(
     x_um: float,
     y_um: float,
-    blocked: np.ndarray,
+    transmission: np.ndarray,
     half_range_um: float,
     outside_mask: str,
-) -> bool:
-    pixel = source_pixel(x_um, y_um, half_range_um, blocked.shape[0])
+) -> float:
+    pixel = source_pixel(x_um, y_um, half_range_um, transmission.shape[0])
     if pixel is None:
-        return outside_mask == "allow"
+        return 1.0 if outside_mask == "allow" else 0.0
     row, col = pixel
-    return not bool(blocked[row, col])
+    return float(transmission[row, col])
 
 
 def filter_capture_anchors(
     anchor_in: Path,
     anchor_out: Path,
-    blocked: np.ndarray,
+    transmission: np.ndarray,
     half_range_um: float,
     outside_mask: str,
 ) -> Tuple[Set[str], Set[str], Dict[str, int]]:
@@ -274,6 +285,10 @@ def filter_capture_anchors(
         if missing:
             raise ValueError(f"Capture anchors CSV is missing required columns: {', '.join(missing)}")
         x_col, y_col, legacy = source_columns(fieldnames)
+        if "trajectory_weight" not in fieldnames:
+            fieldnames = [*fieldnames, "trajectory_weight"]
+        if "mask_transmission" not in fieldnames:
+            fieldnames = [*fieldnames, "mask_transmission"]
         rows_by_physical: "OrderedDict[str, List[Dict[str, str]]]" = OrderedDict()
         for row in reader:
             rows_by_physical.setdefault(row["physical_event_uid"], []).append(row)
@@ -286,6 +301,8 @@ def filter_capture_anchors(
         "blocked_physical_events": 0,
         "outside_source_events": 0,
         "legacy_corr_columns_used": int(legacy),
+        "zero_transmission_physical_events": 0,
+        "weighted_physical_events": 0,
     }
 
     anchor_out.parent.mkdir(parents=True, exist_ok=True)
@@ -296,15 +313,27 @@ def filter_capture_anchors(
             first = rows[0]
             x_um = float_from_row(first, x_col)
             y_um = float_from_row(first, y_col)
-            if source_pixel(x_um, y_um, half_range_um, blocked.shape[0]) is None:
+            if source_pixel(x_um, y_um, half_range_um, transmission.shape[0]) is None:
                 counts["outside_source_events"] += 1
-            if not allowed_by_mask(x_um, y_um, blocked, half_range_um, outside_mask):
+            event_transmission = transmission_at_source(x_um, y_um, transmission, half_range_um, outside_mask)
+            if event_transmission <= 0.0:
                 counts["blocked_physical_events"] += 1
+                counts["zero_transmission_physical_events"] += 1
                 continue
             allowed_physical.add(physical_uid)
             counts["allowed_physical_events"] += 1
+            if abs(event_transmission - 1.0) > 1.0e-12:
+                counts["weighted_physical_events"] += 1
             for row in rows:
                 allowed_sources.add(row["source_event_uid"])
+                base_weight = row.get("trajectory_weight", "")
+                if base_weight in (None, ""):
+                    base_value = 1.0
+                else:
+                    base_value = float(base_weight)
+                row = dict(row)
+                row["trajectory_weight"] = f"{base_value * event_transmission:.12g}"
+                row["mask_transmission"] = f"{event_transmission:.12g}"
                 writer.writerow(row)
     return allowed_physical, allowed_sources, counts
 
@@ -433,14 +462,98 @@ def save_radiograph(
     output_path: Path,
     blur_sigma_px: float,
     gamma: float,
+    vmax: Optional[float] = None,
 ) -> None:
+    image = normalize_histogram(hist, blur_sigma_px, gamma, vmax=vmax)[0]
+    plt.imsave(output_path, image, cmap="gray", vmin=0.0, vmax=1.0, origin="lower")
+
+
+def normalize_histogram(
+    hist: np.ndarray,
+    blur_sigma_px: float,
+    gamma: float,
+    vmax: Optional[float] = None,
+    percentile: float = 99.5,
+) -> Tuple[np.ndarray, float]:
     image = gaussian_blur(hist.astype(float), blur_sigma_px)
-    if np.any(image > 0.0):
-        scale = np.percentile(image[image > 0.0], 99.5)
-        image = np.clip(image / max(scale, 1.0e-12), 0.0, 1.0)
+    if vmax is None:
+        if np.any(image > 0.0):
+            vmax = float(np.percentile(image[image > 0.0], percentile))
+        else:
+            vmax = 1.0
+    image = np.clip(image / max(float(vmax), 1.0e-12), 0.0, 1.0)
     if gamma > 0.0:
         image = np.power(image, gamma)
-    plt.imsave(output_path, image, cmap="gray", vmin=0.0, vmax=1.0, origin="lower")
+    return image, float(vmax)
+
+
+def contrast_enhanced_image(hist: np.ndarray, blur_sigma_px: float, gamma: float = 0.5) -> np.ndarray:
+    image = gaussian_blur(hist.astype(float), blur_sigma_px)
+    positive = image[image > 0.0]
+    if positive.size:
+        lo = float(np.percentile(positive, 1.0))
+        hi = float(np.percentile(positive, 99.0))
+        image = np.clip((image - lo) / max(hi - lo, 1.0e-12), 0.0, 1.0)
+    else:
+        image = np.zeros_like(image, dtype=float)
+    if gamma > 0.0:
+        image = np.power(image, gamma)
+    return image
+
+
+def image_metrics(hist: np.ndarray, blur_sigma_px: float) -> Dict[str, float]:
+    image = gaussian_blur(hist.astype(float), blur_sigma_px)
+    positive = image[image > 0.0]
+    values = positive if positive.size else image.ravel()
+    mean = float(np.mean(values)) if values.size else 0.0
+    std = float(np.std(values)) if values.size else 0.0
+    p05 = float(np.percentile(values, 5.0)) if values.size else 0.0
+    p50 = float(np.percentile(values, 50.0)) if values.size else 0.0
+    p95 = float(np.percentile(values, 95.0)) if values.size else 0.0
+    total = float(np.sum(image))
+    return {
+        "total_intensity": total,
+        "mean_intensity": mean,
+        "median_intensity": p50,
+        "p05_intensity": p05,
+        "p95_intensity": p95,
+        "std_intensity": std,
+        "visibility_p95_p05": (p95 - p05) / max(p95 + p05, 1.0e-12),
+        "snr_proxy": mean / max(std, 1.0e-12),
+    }
+
+
+def write_metrics_csv(path: Path, rows: Sequence[Dict[str, object]]) -> None:
+    if not rows:
+        return
+    fieldnames: List[str] = []
+    for row in rows:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as fout:
+        writer = csv.DictWriter(fout, fieldnames=fieldnames, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def write_mask_summary(args: argparse.Namespace, out_dir: Path, counts: Dict[str, int]) -> None:
+    row: Dict[str, object] = {
+        "mask_image": str(args.mask_image),
+        "mask_threshold": args.mask_threshold,
+        "white_transmission": args.white_transmission,
+        "black_transmission": args.black_transmission,
+        "edge_transmission": args.edge_transmission,
+        "block_mask_edge": int(args.block_mask_edge),
+        "outside_mask": args.outside_mask,
+    }
+    row.update(counts)
+    write_metrics_csv(out_dir / "mask_transmission_summary.csv", [row])
+    (out_dir / "mask_transmission_summary.json").write_text(
+        json.dumps(row, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def make_outputs(args: argparse.Namespace, detected_photons: Path, out_dir: Path) -> None:
@@ -452,12 +565,25 @@ def make_outputs(args: argparse.Namespace, detected_photons: Path, out_dir: Path
     save_hit_map(raw_hist, out_dir / "photon_hit_map.png", args.image_range_um)
 
     image_hist = photon_histogram(xs, ys, weights, args.image_pixels, args.image_range_um)
+    np.save(out_dir / "radiograph_histogram.npy", image_hist)
     save_radiograph(
         image_hist,
         out_dir / "simulated_radiograph.png",
         args.blur_sigma_px,
         args.gamma,
     )
+    plt.imsave(
+        out_dir / "simulated_radiograph_contrast.png",
+        contrast_enhanced_image(image_hist, args.blur_sigma_px),
+        cmap="gray",
+        vmin=0.0,
+        vmax=1.0,
+        origin="lower",
+    )
+    metrics = image_metrics(image_hist, args.blur_sigma_px)
+    metrics["detected_photon_rows"] = int(len(xs))
+    metrics["detected_photon_weight"] = float(np.sum(weights))
+    write_metrics_csv(out_dir / "image_metrics.csv", [metrics])
 
 
 def save_ratio_strip(
@@ -466,25 +592,42 @@ def save_ratio_strip(
     ratio_dir: Path,
     output_path: Path,
 ) -> Optional[Path]:
-    panels: List[Tuple[str, Optional[np.ndarray]]] = []
+    panels: List[Tuple[str, Optional[np.ndarray], Optional[np.ndarray]]] = []
     for thickness in thicknesses:
-        path = ratio_dir / thickness_label(thickness) / "simulated_radiograph.png"
-        if path.exists():
-            panels.append((thickness_label(thickness), mpimg.imread(path)))
+        run_dir = ratio_dir / thickness_label(thickness)
+        hist_path = run_dir / "radiograph_histogram.npy"
+        image_path = run_dir / "simulated_radiograph.png"
+        if hist_path.exists():
+            hist = np.load(hist_path)
+            panels.append((thickness_label(thickness), hist, None))
+        elif image_path.exists():
+            panels.append((thickness_label(thickness), None, mpimg.imread(image_path)))
         else:
-            panels.append((thickness_label(thickness), None))
+            panels.append((thickness_label(thickness), None, None))
 
-    if not any(image is not None for _, image in panels):
+    if not any(hist is not None or image is not None for _, hist, image in panels):
         return None
+
+    histograms = [hist for _, hist, _ in panels if hist is not None]
+    unified_vmax = None
+    if histograms:
+        blurred_positive = [
+            gaussian_blur(hist.astype(float), 1.2)[gaussian_blur(hist.astype(float), 1.2) > 0.0]
+            for hist in histograms
+        ]
+        values = np.concatenate([arr for arr in blurred_positive if arr.size]) if any(arr.size for arr in blurred_positive) else np.array([])
+        unified_vmax = float(np.percentile(values, 99.5)) if values.size else 1.0
 
     fig, axes = plt.subplots(1, len(panels), figsize=(3.0 * len(panels), 3.0), dpi=220)
     if len(panels) == 1:
         axes = [axes]
-    for ax, (label, image) in zip(axes, panels):
+    for ax, (label, hist, image) in zip(axes, panels):
         ax.set_box_aspect(1)
         ax.set_xticks([])
         ax.set_yticks([])
         ax.set_title(f"{label} um", fontsize=10)
+        if hist is not None:
+            image = normalize_histogram(hist, 1.2, 0.8, vmax=unified_vmax)[0]
         if image is None:
             ax.text(0.5, 0.5, "missing", ha="center", va="center", transform=ax.transAxes)
             for spine in ax.spines.values():
@@ -500,7 +643,115 @@ def save_ratio_strip(
     fig.savefig(output_path)
     plt.close(fig)
     print(f"wrote,{output_path}", flush=True)
+    save_ratio_enhancement_outputs(ratio, panels, ratio_dir, output_path)
     return output_path
+
+
+def save_ratio_enhancement_outputs(
+    ratio: str,
+    panels: Sequence[Tuple[str, Optional[np.ndarray], Optional[np.ndarray]]],
+    ratio_dir: Path,
+    strip_path: Path,
+) -> None:
+    hist_panels = [(label, hist) for label, hist, _ in panels if hist is not None]
+    if not hist_panels:
+        return
+
+    contrast_path = strip_path.with_name(strip_path.stem + "_contrast.png")
+    fig, axes = plt.subplots(1, len(panels), figsize=(3.0 * len(panels), 3.0), dpi=220)
+    if len(panels) == 1:
+        axes = [axes]
+    for ax, (label, hist, image) in zip(axes, panels):
+        ax.set_box_aspect(1)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_title(f"{label} um", fontsize=10)
+        if hist is None:
+            ax.text(0.5, 0.5, "missing", ha="center", va="center", transform=ax.transAxes)
+        else:
+            ax.imshow(contrast_enhanced_image(hist, 1.2), cmap="gray", origin="lower", vmin=0.0, vmax=1.0)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+    fig.suptitle(f"Ratio {ratio} contrast enhanced", y=0.98, fontsize=12)
+    fig.tight_layout(pad=0.4, w_pad=0.2)
+    fig.savefig(contrast_path)
+    plt.close(fig)
+    print(f"wrote,{contrast_path}", flush=True)
+
+    reference_label, reference_hist = hist_panels[0]
+    reference = gaussian_blur(reference_hist.astype(float), 1.2)
+    ratio_images: List[Tuple[str, Optional[np.ndarray]]] = []
+    diff_images: List[Tuple[str, Optional[np.ndarray]]] = []
+    eps = max(float(np.percentile(reference[reference > 0.0], 1.0)), 1.0e-12) if np.any(reference > 0.0) else 1.0e-12
+    for label, hist, _ in panels:
+        if hist is None:
+            ratio_images.append((label, None))
+            diff_images.append((label, None))
+            continue
+        image = gaussian_blur(hist.astype(float), 1.2)
+        ratio_images.append((label, np.clip((image + eps) / (reference + eps), 0.5, 1.5)))
+        diff_images.append((label, np.clip((image - reference) / np.maximum(reference + eps, eps), -0.5, 0.5)))
+
+    save_color_strip(
+        ratio_images,
+        strip_path.with_name(strip_path.stem + f"_ratio_to_{reference_label}um.png"),
+        f"Ratio {ratio} / {reference_label} um",
+        cmap="viridis",
+        vmin=0.5,
+        vmax=1.5,
+    )
+    save_color_strip(
+        diff_images,
+        strip_path.with_name(strip_path.stem + f"_relative_difference_to_{reference_label}um.png"),
+        f"Ratio {ratio} relative difference to {reference_label} um",
+        cmap="coolwarm",
+        vmin=-0.5,
+        vmax=0.5,
+    )
+
+    metric_rows = []
+    for label, hist, _ in panels:
+        if hist is None:
+            continue
+        row: Dict[str, object] = {"ratio": ratio, "thickness_um": label}
+        row.update(image_metrics(hist, 1.2))
+        metric_rows.append(row)
+    metrics_path = ratio_dir / ("metrics_" + "_".join(label for label, _, _ in panels) + "um.csv")
+    write_metrics_csv(metrics_path, metric_rows)
+    print(f"wrote,{metrics_path}", flush=True)
+
+
+def save_color_strip(
+    panels: Sequence[Tuple[str, Optional[np.ndarray]]],
+    output_path: Path,
+    title: str,
+    cmap: str,
+    vmin: float,
+    vmax: float,
+) -> None:
+    fig, axes = plt.subplots(1, len(panels), figsize=(3.0 * len(panels), 3.0), dpi=220)
+    if len(panels) == 1:
+        axes = [axes]
+    last_im = None
+    for ax, (label, image) in zip(axes, panels):
+        ax.set_box_aspect(1)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_title(f"{label} um", fontsize=10)
+        if image is None:
+            ax.text(0.5, 0.5, "missing", ha="center", va="center", transform=ax.transAxes)
+        else:
+            last_im = ax.imshow(image, cmap=cmap, origin="lower", vmin=vmin, vmax=vmax)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+    fig.suptitle(title, y=0.98, fontsize=12)
+    if last_im is not None:
+        fig.colorbar(last_im, ax=list(axes), shrink=0.72, pad=0.01)
+    fig.subplots_adjust(left=0.02, right=0.92, top=0.82, bottom=0.04, wspace=0.05)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path)
+    plt.close(fig)
+    print(f"wrote,{output_path}", flush=True)
 
 
 def run_one_mask_imaging(args: argparse.Namespace) -> int:
@@ -522,20 +773,22 @@ def run_one_mask_imaging(args: argparse.Namespace) -> int:
     temp_dir = Path(tempfile.mkdtemp(dir=temp_parent))
 
     try:
-        blocked = read_mask(args.mask_image, args.mask_threshold, args.block_mask_edge)
+        transmission = read_mask_transmission(args)
         filtered_stageb = temp_dir / "stageB"
         filtered_anchors = filtered_stageb / anchors.name
         filtered_unexpected = filtered_stageb / unexpected.name
         allowed_physical, allowed_sources, counts = filter_capture_anchors(
             anchors,
             filtered_anchors,
-            blocked,
+            transmission,
             args.source_range_um,
             args.outside_mask,
         )
+        if not args.dry_run:
+            write_mask_summary(args, out_dir, counts)
         filter_csv_by_ids(unexpected, filtered_unexpected, allowed_physical, allowed_sources)
         if not allowed_physical:
-            raise RuntimeError("Mask blocked all source events; no OpticalMC run was launched.")
+            raise RuntimeError("Mask left no source events with nonzero transmission; no OpticalMC run was launched.")
 
         generated_dir = temp_dir / "generated_sources"
         run_command(
