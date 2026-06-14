@@ -59,6 +59,34 @@ outputs/mask_imaging/<ratio>/
 The strip image places the four simulated radiographs in one horizontal row. Each panel is
 drawn as a square.
 
+`masks/` is only the input-mask directory. It is not used for outputs unless you explicitly
+pass `--output-dir`.
+
+On Linux, for example:
+
+```bash
+python mask_imaging/run_mask_imaging.py \
+  --mask-image masks/SYSU.png \
+  --samples-per-step 16 \
+  --num-threads 8
+```
+
+The default output root is:
+
+```text
+outputs/mask_imaging/
+```
+
+Use this if you want a custom output location:
+
+```bash
+python mask_imaging/run_mask_imaging.py \
+  --mask-image masks/SYSU.png \
+  --output-dir mask_imaging_results \
+  --samples-per-step 16 \
+  --num-threads 8
+```
+
 Large intermediate source/event files and raw OpticalMC summary files are created in a
 temporary directory and removed when the run finishes. Add `--keep-intermediates` only when
 debugging.

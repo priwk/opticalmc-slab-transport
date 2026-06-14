@@ -67,6 +67,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--optical-properties", type=Path, default=None)
     parser.add_argument("--phase-function-csv", type=Path, default=None)
     parser.add_argument("--scattering-model", choices=("auto", "tabulated", "hg"), default="auto")
+    parser.add_argument(
+        "--transport-scattering-mode",
+        choices=("reduced-isotropic", "anisotropic"),
+        default="anisotropic",
+        help="anisotropic uses mu_s/g and the tabulated phase function when available.",
+    )
     parser.add_argument("--optical-component", choices=("bulk", "total", "boundary"), default="bulk")
     parser.add_argument("--mu-a-scale", type=float, default=1.0)
     parser.add_argument("--mu-s-scale", type=float, default=1.0)
@@ -616,6 +622,9 @@ def main() -> int:
     ratios = selected_ratios(args)
     thicknesses = selected_thicknesses(args)
     failures: List[Tuple[str, str, str]] = []
+    default_output_root = PROJECT_ROOT / "outputs" / "mask_imaging"
+    print(f"mask_imaging_output_root,{args.output_dir or default_output_root}", flush=True)
+    print(f"transport_scattering_mode,{args.transport_scattering_mode}", flush=True)
 
     for ratio in ratios:
         for thickness in thicknesses:
