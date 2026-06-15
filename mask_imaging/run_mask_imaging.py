@@ -148,7 +148,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--display-max",
         type=float,
-        default=65535.0,
+        default=5000.0,
         help="Fixed raw-intensity upper bound for PNG display clipping. No data-dependent normalization is applied.",
     )
     parser.add_argument(
@@ -480,7 +480,7 @@ def save_radiograph(
     gamma: float,
     vmax: Optional[float] = None,
 ) -> None:
-    image = raw_display_image(hist, blur_sigma_px, vmax if vmax is not None else 65535.0)
+    image = raw_display_image(hist, blur_sigma_px, vmax if vmax is not None else 5000.0)
     plt.imsave(output_path, image, cmap="gray", vmin=0.0, vmax=1.0, origin="lower")
 
 
@@ -611,7 +611,7 @@ def save_ratio_strip(
     thicknesses: Sequence[str],
     ratio_dir: Path,
     output_path: Path,
-    display_max: float = 65535.0,
+    display_max: float = 5000.0,
     display_gamma: float = 0.5,
 ) -> Optional[Path]:
     panels: List[Tuple[str, Optional[np.ndarray], Optional[np.ndarray]]] = []
