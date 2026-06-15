@@ -283,27 +283,30 @@ def plot_mtf_threshold_trends(mtf_df: pd.DataFrame, fig_dir: Path, dpi: int) -> 
         )
         if grouped.empty:
             continue
-        plt.figure(figsize=(5.2, 5.2))
-        for col, label, marker in [
-            ("mtf50_lp_per_mm", "MTF50", "o"),
-            ("mtf10_lp_per_mm", "MTF10", "s"),
+        stale = fig_dir / ratio / "thickness_mtf_thresholds.png"
+        if stale.exists():
+            stale.unlink()
+        for col, label, marker, filename in [
+            ("mtf50_lp_per_mm", "MTF50", "o", "thickness_mtf50_threshold.png"),
+            ("mtf10_lp_per_mm", "MTF10", "s", "thickness_mtf10_threshold.png"),
         ]:
             values = grouped[col].to_numpy(dtype=float)
-            if np.isfinite(values).any():
-                plt.plot(
-                    grouped["thickness_um"],
-                    values,
-                    marker=marker,
-                    linewidth=1.8,
-                    label=label,
-                )
-        plt.xlabel("Thickness (um)")
-        plt.ylabel("Spatial frequency (lp/mm)")
-        plt.title(f"{ratio_label} MTF thresholds vs thickness")
-        plt.legend()
-        ax = plt.gca()
-        style_axes(ax, square=True)
-        savefig(fig_dir / ratio / "thickness_mtf_thresholds.png", dpi)
+            if not np.isfinite(values).any():
+                continue
+            plt.figure(figsize=(5.2, 5.2))
+            plt.plot(
+                grouped["thickness_um"],
+                values,
+                marker=marker,
+                linewidth=1.8,
+                label=label,
+            )
+            plt.xlabel("Thickness (um)")
+            plt.ylabel(f"{label} (lp/mm)")
+            plt.title(f"{ratio_label} {label} vs thickness")
+            ax = plt.gca()
+            style_axes(ax, square=True)
+            savefig(fig_dir / ratio / filename, dpi)
 
 
 def plot_lsf_thickness_panels(

@@ -435,16 +435,33 @@ def plot_mtf_comparison(
         .sort_values(["ratio_tag", "thickness_um"])
     )
     paths: List[Path] = []
-    fig, ax = plt.subplots(figsize=(5.2, 5.2))
-    for ratio, group in grouped.groupby("ratio_tag", sort=False):
-        ax.plot(group["thickness_um"], group["mtf50_lp_per_mm"], marker="o", linewidth=1.6, label=f"{format_ratio_label(str(ratio))} MTF50")
-        ax.plot(group["thickness_um"], group["mtf10_lp_per_mm"], marker="s", linestyle="--", linewidth=1.4, label=f"{format_ratio_label(str(ratio))} MTF10")
-    ax.set_xlabel("Thickness (um)")
-    ax.set_ylabel("Spatial frequency (lp/mm)")
-    ax.set_title("MTF50 and MTF10")
-    ax.legend(fontsize=7, ncols=2)
-    style_axes(ax, square=True)
-    paths += save_all(fig, out_dir, "ratio_compare_mtf50_mtf10", formats, dpi)
+    for fmt in formats:
+        stale = out_dir / f"ratio_compare_mtf50_mtf10.{fmt.lstrip('.')}"
+        if stale.exists():
+            stale.unlink()
+
+    for column, label, stem, marker in [
+        ("mtf50_lp_per_mm", "MTF50", "ratio_compare_mtf50", "o"),
+        ("mtf10_lp_per_mm", "MTF10", "ratio_compare_mtf10", "s"),
+    ]:
+        fig, ax = plt.subplots(figsize=(5.2, 5.2))
+        for ratio, group in grouped.groupby("ratio_tag", sort=False):
+            values = group[column].to_numpy(dtype=float)
+            if np.isfinite(values).any():
+                ax.plot(
+                    group["thickness_um"],
+                    values,
+                    marker=marker,
+                    linewidth=1.6,
+                    label=format_ratio_label(str(ratio)),
+                )
+        ax.set_xlabel("Thickness (um)")
+        ax.set_ylabel(f"{label} (lp/mm)")
+        ax.set_title(label)
+        ax.legend(fontsize=8)
+        style_axes(ax, square=True)
+        paths += save_all(fig, out_dir, stem, formats, dpi)
+
     paths += plot_metric_by_thickness_panels(
         grouped,
         "mtf50_lp_per_mm",
@@ -463,6 +480,155 @@ def plot_mtf_comparison(
         formats,
         dpi,
     )
+    return paths
+
+
+def ordered_run_tags(runs: pd.DataFrame) -> List[str]:
+    if runs.empty or "ratio_tag" not in runs.columns:
+        return []
+    return sorted([str(v) for v in runs["ratio_tag"].drop_duplicates()], key=ratio_sort_key)
+
+
+def plot_lsf_comparison(
+    runs: pd.DataFrame, out_dir: Path, formats: List[str], dpi: int
+) -> List[Path]:
+    if runs.empty:
+        return []
+    panel_thicknesses = select_panel_thicknesses(runs["thickness_um"], 6)
+    if not panel_thicknesses:
+        return []
+
+    paths: List[Path] = []
+    for axis, column in [("x", "lsf_x_csv"), ("y", "lsf_y_csv")]:
+        fig, axes = plt.subplots(2, 3, figsize=(7.2, 4.8), squeeze=False)
+        handles = []
+        labels = []
+        wrote_any = False
+        for ax in axes.ravel():
+            ax.set_visible(False)
+        for ax, thickness in zip(axes.ravel(), panel_thicknesses):
+            sub = runs[np.isclose(runs["thickness_um"].astype(float), thickness)].copy()
+            if sub.empty:
+                continue
+            sub["ratio_sort"] = sub["ratio_tag"].map(lambda v: ratio_sort_key(str(v)))
+            sub = sub.sort_values("ratio_sort")
+            ax.set_visible(True)
+            for run in sub.itertuples(index=False):
+                path = Path(str(getattr(run, column)))
+                if not path.exists():
+                    continue
+                lsf = pd.read_csv(path)
+                if lsf.empty or "weight" not in lsf.columns:
+                    continue
+                position_col = lsf.columns[0]
+                y = lsf["weight"].to_numpy(dtype=float)
+                max_y = np.nanmax(y) if len(y) else np.nan
+                if np.isfinite(max_y) and max_y > 0:
+                    y = y / max_y
+                line = ax.plot(
+                    lsf[position_col],
+                    y,
+                    linewidth=1.3,
+                    label=format_ratio_label(str(run.ratio_tag)),
+                )[0]
+                if format_ratio_label(str(run.ratio_tag)) not in labels:
+                    handles.append(line)
+                    labels.append(format_ratio_label(str(run.ratio_tag)))
+                wrote_any = True
+            ax.set_title(f"{thickness_label_for_axis(thickness)} um", fontsize=9)
+            ax.set_xlabel(f"{axis} (um)")
+            ax.set_ylabel("LSF / max")
+            ax.tick_params(labelsize=7)
+            style_axes(ax, square=True)
+        if not wrote_any:
+            plt.close(fig)
+            continue
+        if handles:
+            fig.legend(handles, labels, loc="upper center", ncols=min(3, len(labels)), fontsize=8)
+        fig.suptitle(f"LSF-{axis} comparison", y=0.99)
+        fig.tight_layout(rect=(0.02, 0.0, 1.0, 0.92))
+        paths += save_all(fig, out_dir, f"ratio_compare_lsf_{axis}_by_thickness_panels", formats, dpi)
+    return paths
+
+
+def load_psf_image(path: Path) -> Optional[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    if not path.exists():
+        return None
+    df = pd.read_csv(path)
+    if df.empty:
+        return None
+    required = {"x_bin_center_um", "y_bin_center_um", "weight"}
+    if not required.issubset(df.columns):
+        return None
+    xs = np.sort(df["x_bin_center_um"].unique())
+    ys = np.sort(df["y_bin_center_um"].unique())
+    image = (
+        df.pivot(index="y_bin_center_um", columns="x_bin_center_um", values="weight")
+        .reindex(index=ys, columns=xs)
+        .fillna(0)
+        .to_numpy(dtype=float)
+    )
+    return xs, ys, image
+
+
+def plot_psf_comparison(
+    runs: pd.DataFrame, out_dir: Path, formats: List[str], dpi: int
+) -> List[Path]:
+    if runs.empty:
+        return []
+    ratio_tags = ordered_run_tags(runs)
+    panel_thicknesses = select_panel_thicknesses(runs["thickness_um"], 6)
+    if not ratio_tags or not panel_thicknesses:
+        return []
+
+    paths: List[Path] = []
+    for thickness in panel_thicknesses:
+        items = []
+        for ratio in ratio_tags:
+            match = runs[
+                (runs["ratio_tag"].astype(str) == ratio)
+                & np.isclose(runs["thickness_um"].astype(float), thickness)
+            ]
+            if match.empty:
+                continue
+            loaded = load_psf_image(Path(str(match.iloc[0]["psf_2d_csv"])))
+            if loaded is None:
+                continue
+            xs, ys, image = loaded
+            items.append((ratio, xs, ys, image))
+        if not items:
+            continue
+
+        n_cols = len(items)
+        fig, axes = plt.subplots(1, n_cols, figsize=(max(3.0 * n_cols, 4.0), 3.2), squeeze=False)
+        vmax = max(float(np.nanmax(image)) for _, _, _, image in items)
+        last_image = None
+        for ax, (ratio, xs, ys, image) in zip(axes.ravel(), items):
+            last_image = ax.imshow(
+                image,
+                origin="lower",
+                extent=[xs.min(), xs.max(), ys.min(), ys.max()],
+                aspect="equal",
+                cmap="viridis",
+                vmin=0,
+                vmax=vmax if vmax > 0 else None,
+            )
+            ax.set_title(format_ratio_label(str(ratio)), fontsize=9)
+            ax.set_xlabel("x (um)")
+            ax.set_ylabel("y (um)")
+            ax.tick_params(labelsize=7)
+            style_axes(ax, square=True)
+        if last_image is not None:
+            fig.colorbar(last_image, ax=axes.ravel().tolist(), label="Detected weight", shrink=0.82)
+        fig.suptitle(f"PSF comparison at {thickness_label_for_axis(thickness)} um", y=0.99)
+        fig.subplots_adjust(left=0.08, right=0.88, bottom=0.16, top=0.82, wspace=0.28)
+        paths += save_all(
+            fig,
+            out_dir,
+            f"ratio_compare_psf_{thickness_label_for_axis(thickness)}um",
+            formats,
+            dpi,
+        )
     return paths
 
 
@@ -685,6 +851,9 @@ def main() -> int:
             args.dpi,
         )
     paths += plot_summary_grid(combined, light_col, out_dir, args.formats, args.dpi)
+    runs = discover_runs(args.outputs_dir, args.ratio)
+    paths += plot_lsf_comparison(runs, out_dir, args.formats, args.dpi)
+    paths += plot_psf_comparison(runs, out_dir, args.formats, args.dpi)
     paths += plot_mtf_comparison(load_mtf_metrics(args.outputs_dir, args.analysis_dir, args.ratio), out_dir, args.formats, args.dpi)
     paths += plot_phase_functions(combined, args.outputs_dir.parent, out_dir, args.formats, args.dpi)
 
