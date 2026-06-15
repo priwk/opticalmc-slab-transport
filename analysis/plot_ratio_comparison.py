@@ -21,6 +21,7 @@ from common import (
     add_plot_metrics,
     configure_plot_style,
     detected_light_column,
+    display_run_tag,
     discover_runs,
     load_phase_function,
     phase_function_polar_curve,
@@ -104,7 +105,7 @@ def ratio_sort_key(value: str) -> tuple[float, float, str]:
 
 
 def format_ratio_label(value: str) -> str:
-    return value.replace(RUN_TAG_SEPARATOR, " ").replace("-", ":")
+    return display_run_tag(value).replace(RUN_TAG_SEPARATOR, " ").replace("-", ":")
 
 
 def is_relative_to(path: Path, parent: Path) -> bool:

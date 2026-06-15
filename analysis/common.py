@@ -257,6 +257,17 @@ def run_tag(ratio: str, run_label: Optional[str] = None) -> str:
     return ratio
 
 
+def display_run_tag(tag: str, hidden_run_labels: Optional[Iterable[str]] = None) -> str:
+    hidden = set(hidden_run_labels or ["modeB_anisotropic"])
+    for separator in (RUN_TAG_SEPARATOR, "/"):
+        if separator not in tag:
+            continue
+        ratio, run_label = tag.split(separator, 1)
+        if run_label in hidden:
+            return ratio
+    return tag
+
+
 def run_filter_matches(ratio_filter: set[str], ratio: str, run_label: Optional[str]) -> bool:
     if not ratio_filter:
         return True
