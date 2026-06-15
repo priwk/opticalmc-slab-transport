@@ -151,6 +151,12 @@ def parse_args() -> argparse.Namespace:
         default=65535.0,
         help="Fixed raw-intensity upper bound for PNG display clipping. No data-dependent normalization is applied.",
     )
+    parser.add_argument(
+        "--display-gamma",
+        type=float,
+        default=0.5,
+        help="Fixed gamma used only for *_gamma.png outputs after display-max clipping. No data-dependent normalization is applied.",
+    )
     parser.add_argument("--keep-intermediates", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -478,9 +484,18 @@ def save_radiograph(
     plt.imsave(output_path, image, cmap="gray", vmin=0.0, vmax=1.0, origin="lower")
 
 
-def raw_display_image(hist: np.ndarray, blur_sigma_px: float, display_max: float) -> np.ndarray:
+def raw_display_image(
+    hist: np.ndarray,
+    blur_sigma_px: float,
+    display_max: float,
+    display_gamma: float = 1.0,
+) -> np.ndarray:
     image = gaussian_blur(hist.astype(float), blur_sigma_px)
-    return np.clip(image, 0.0, max(float(display_max), 1.0e-12)) / max(float(display_max), 1.0e-12)
+    vmax = max(float(display_max), 1.0e-12)
+    image = np.clip(image, 0.0, vmax) / vmax
+    if display_gamma > 0.0 and abs(display_gamma - 1.0) > 1.0e-12:
+        image = np.power(image, display_gamma)
+    return image
 
 
 def contrast_enhanced_image(hist: np.ndarray, blur_sigma_px: float, gamma: float = 0.5) -> np.ndarray:
@@ -570,6 +585,14 @@ def make_outputs(args: argparse.Namespace, detected_photons: Path, out_dir: Path
         vmax=args.display_max,
     )
     plt.imsave(
+        out_dir / "simulated_radiograph_gamma.png",
+        raw_display_image(image_hist, args.blur_sigma_px, args.display_max, args.display_gamma),
+        cmap="gray",
+        vmin=0.0,
+        vmax=1.0,
+        origin="lower",
+    )
+    plt.imsave(
         out_dir / "simulated_radiograph_contrast.png",
         contrast_enhanced_image(image_hist, args.blur_sigma_px),
         cmap="gray",
@@ -589,6 +612,7 @@ def save_ratio_strip(
     ratio_dir: Path,
     output_path: Path,
     display_max: float = 65535.0,
+    display_gamma: float = 0.5,
 ) -> Optional[Path]:
     panels: List[Tuple[str, Optional[np.ndarray], Optional[np.ndarray]]] = []
     for thickness in thicknesses:
@@ -631,8 +655,49 @@ def save_ratio_strip(
     fig.savefig(output_path)
     plt.close(fig)
     print(f"wrote,{output_path}", flush=True)
+    save_ratio_gamma_strip(
+        ratio,
+        panels,
+        output_path.with_name(output_path.stem + "_gamma.png"),
+        display_max,
+        display_gamma,
+    )
     save_ratio_enhancement_outputs(ratio, panels, ratio_dir, output_path)
     return output_path
+
+
+def save_ratio_gamma_strip(
+    ratio: str,
+    panels: Sequence[Tuple[str, Optional[np.ndarray], Optional[np.ndarray]]],
+    output_path: Path,
+    display_max: float,
+    display_gamma: float,
+) -> None:
+    fig, axes = plt.subplots(1, len(panels), figsize=(3.0 * len(panels), 3.0), dpi=220)
+    if len(panels) == 1:
+        axes = [axes]
+    for ax, (label, hist, image) in zip(axes, panels):
+        ax.set_box_aspect(1)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_title(f"{label} um", fontsize=10)
+        if hist is not None:
+            image = raw_display_image(hist, 1.2, display_max, display_gamma)
+        if image is None:
+            ax.text(0.5, 0.5, "missing", ha="center", va="center", transform=ax.transAxes)
+            for spine in ax.spines.values():
+                spine.set_visible(True)
+                spine.set_linewidth(0.8)
+            continue
+        ax.imshow(image, cmap="gray", origin="lower", vmin=0.0, vmax=1.0)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+    fig.suptitle(f"Ratio {ratio} fixed gamma", y=0.98, fontsize=12)
+    fig.tight_layout(pad=0.4, w_pad=0.2)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path)
+    plt.close(fig)
+    print(f"wrote,{output_path}", flush=True)
 
 
 def save_ratio_enhancement_outputs(
@@ -891,7 +956,7 @@ def main() -> int:
                 else PROJECT_ROOT / "outputs" / "mask_imaging" / ratio
             )
             strip_name = "radiograph_strip_" + "_".join(thickness_label(t) for t in thicknesses) + "um.png"
-            save_ratio_strip(ratio, thicknesses, ratio_dir, ratio_dir / strip_name, args.display_max)
+            save_ratio_strip(ratio, thicknesses, ratio_dir, ratio_dir / strip_name, args.display_max, args.display_gamma)
 
     if failures:
         print("mask_imaging failures:", flush=True)
