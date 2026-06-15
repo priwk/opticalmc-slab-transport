@@ -78,9 +78,10 @@ outputs/mask_imaging/<ratio>/
 ```
 
 The strip image places the four simulated radiographs in one horizontal row. Each panel is
-drawn as a square. The default strip uses a shared display normalization across the four
-thicknesses so that brightness differences are not independently rescaled away. The contrast,
-ratio, and relative-difference strips are display-enhanced outputs for visual comparison.
+drawn as a square. The default single radiograph and strip are not data-normalized; they use
+the raw weighted histogram clipped to a fixed PNG display range set by `--display-max`
+(default `65535`). The contrast, ratio, and relative-difference strips are display-enhanced
+outputs for visual comparison, not raw brightness images.
 
 `masks/` is only the input-mask directory. It is not used for outputs unless you explicitly
 pass `--output-dir`.
@@ -122,6 +123,7 @@ Useful options:
 --raw-bin-size-um 25       Bin size for photon_hit_map.png.
 --image-pixels 512         Pixel width/height for simulated_radiograph.png.
 --blur-sigma-px 1.2        Gaussian blur applied to simulated_radiograph.png.
+--display-max 65535        Fixed raw-intensity upper bound for PNG clipping; no data-dependent normalization.
 --block-mask-edge          Treat black edge pixels with black-transmission instead of edge-transmission.
 --black-transmission 0.05  Transmission assigned to black mask interiors.
 --edge-transmission 0.2    Transmission assigned to black edge pixels.

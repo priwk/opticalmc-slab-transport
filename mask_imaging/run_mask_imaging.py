@@ -140,7 +140,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--raw-bin-size-um", type=float, default=25.0)
     parser.add_argument("--image-pixels", type=int, default=512)
     parser.add_argument("--blur-sigma-px", type=float, default=1.2)
-    parser.add_argument("--gamma", type=float, default=0.8)
+    parser.add_argument("--gamma", type=float, default=0.8, help="Legacy option; raw radiograph display no longer applies gamma.")
+    parser.add_argument(
+        "--display-max",
+        type=float,
+        default=65535.0,
+        help="Fixed raw-intensity upper bound for PNG display clipping. No data-dependent normalization is applied.",
+    )
     parser.add_argument("--keep-intermediates", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -464,27 +470,13 @@ def save_radiograph(
     gamma: float,
     vmax: Optional[float] = None,
 ) -> None:
-    image = normalize_histogram(hist, blur_sigma_px, gamma, vmax=vmax)[0]
+    image = raw_display_image(hist, blur_sigma_px, vmax if vmax is not None else 65535.0)
     plt.imsave(output_path, image, cmap="gray", vmin=0.0, vmax=1.0, origin="lower")
 
 
-def normalize_histogram(
-    hist: np.ndarray,
-    blur_sigma_px: float,
-    gamma: float,
-    vmax: Optional[float] = None,
-    percentile: float = 99.5,
-) -> Tuple[np.ndarray, float]:
+def raw_display_image(hist: np.ndarray, blur_sigma_px: float, display_max: float) -> np.ndarray:
     image = gaussian_blur(hist.astype(float), blur_sigma_px)
-    if vmax is None:
-        if np.any(image > 0.0):
-            vmax = float(np.percentile(image[image > 0.0], percentile))
-        else:
-            vmax = 1.0
-    image = np.clip(image / max(float(vmax), 1.0e-12), 0.0, 1.0)
-    if gamma > 0.0:
-        image = np.power(image, gamma)
-    return image, float(vmax)
+    return np.clip(image, 0.0, max(float(display_max), 1.0e-12)) / max(float(display_max), 1.0e-12)
 
 
 def contrast_enhanced_image(hist: np.ndarray, blur_sigma_px: float, gamma: float = 0.5) -> np.ndarray:
@@ -571,6 +563,7 @@ def make_outputs(args: argparse.Namespace, detected_photons: Path, out_dir: Path
         out_dir / "simulated_radiograph.png",
         args.blur_sigma_px,
         args.gamma,
+        vmax=args.display_max,
     )
     plt.imsave(
         out_dir / "simulated_radiograph_contrast.png",
@@ -591,6 +584,7 @@ def save_ratio_strip(
     thicknesses: Sequence[str],
     ratio_dir: Path,
     output_path: Path,
+    display_max: float = 65535.0,
 ) -> Optional[Path]:
     panels: List[Tuple[str, Optional[np.ndarray], Optional[np.ndarray]]] = []
     for thickness in thicknesses:
@@ -608,16 +602,6 @@ def save_ratio_strip(
     if not any(hist is not None or image is not None for _, hist, image in panels):
         return None
 
-    histograms = [hist for _, hist, _ in panels if hist is not None]
-    unified_vmax = None
-    if histograms:
-        blurred_positive = [
-            gaussian_blur(hist.astype(float), 1.2)[gaussian_blur(hist.astype(float), 1.2) > 0.0]
-            for hist in histograms
-        ]
-        values = np.concatenate([arr for arr in blurred_positive if arr.size]) if any(arr.size for arr in blurred_positive) else np.array([])
-        unified_vmax = float(np.percentile(values, 99.5)) if values.size else 1.0
-
     fig, axes = plt.subplots(1, len(panels), figsize=(3.0 * len(panels), 3.0), dpi=220)
     if len(panels) == 1:
         axes = [axes]
@@ -627,7 +611,7 @@ def save_ratio_strip(
         ax.set_yticks([])
         ax.set_title(f"{label} um", fontsize=10)
         if hist is not None:
-            image = normalize_histogram(hist, 1.2, 0.8, vmax=unified_vmax)[0]
+            image = raw_display_image(hist, 1.2, display_max)
         if image is None:
             ax.text(0.5, 0.5, "missing", ha="center", va="center", transform=ax.transAxes)
             for spine in ax.spines.values():
@@ -903,7 +887,7 @@ def main() -> int:
                 else PROJECT_ROOT / "outputs" / "mask_imaging" / ratio
             )
             strip_name = "radiograph_strip_" + "_".join(thickness_label(t) for t in thicknesses) + "um.png"
-            save_ratio_strip(ratio, thicknesses, ratio_dir, ratio_dir / strip_name)
+            save_ratio_strip(ratio, thicknesses, ratio_dir, ratio_dir / strip_name, args.display_max)
 
     if failures:
         print("mask_imaging failures:", flush=True)
