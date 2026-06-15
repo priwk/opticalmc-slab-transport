@@ -489,6 +489,56 @@ def ordered_run_tags(runs: pd.DataFrame) -> List[str]:
     return sorted([str(v) for v in runs["ratio_tag"].drop_duplicates()], key=ratio_sort_key)
 
 
+def weighted_interval(
+    positions: np.ndarray,
+    weights: np.ndarray,
+    lower: float = 0.05,
+    upper: float = 0.95,
+    pad_fraction: float = 0.12,
+) -> Optional[tuple[float, float]]:
+    positions = np.asarray(positions, dtype=float)
+    weights = np.clip(np.asarray(weights, dtype=float), 0.0, None)
+    valid = np.isfinite(positions) & np.isfinite(weights)
+    positions = positions[valid]
+    weights = weights[valid]
+    if len(positions) == 0:
+        return None
+    order = np.argsort(positions)
+    positions = positions[order]
+    weights = weights[order]
+    total = float(np.sum(weights))
+    if total <= 0:
+        lo, hi = float(np.nanmin(positions)), float(np.nanmax(positions))
+    else:
+        cdf = np.cumsum(weights) / total
+        lo = float(positions[min(np.searchsorted(cdf, lower, side="left"), len(positions) - 1)])
+        hi = float(positions[min(np.searchsorted(cdf, upper, side="left"), len(positions) - 1)])
+    if hi <= lo:
+        lo, hi = float(np.nanmin(positions)), float(np.nanmax(positions))
+    span = hi - lo
+    data_lo, data_hi = float(np.nanmin(positions)), float(np.nanmax(positions))
+    pad = max(span * pad_fraction, median_spacing(positions))
+    return max(data_lo, lo - pad), min(data_hi, hi + pad)
+
+
+def median_spacing(values: np.ndarray) -> float:
+    unique = np.unique(np.asarray(values, dtype=float))
+    if len(unique) < 2:
+        return 1.0
+    diffs = np.diff(np.sort(unique))
+    return float(np.nanmedian(diffs)) if len(diffs) else 1.0
+
+
+def combined_interval(intervals: List[tuple[float, float]]) -> Optional[tuple[float, float]]:
+    if not intervals:
+        return None
+    lo = min(interval[0] for interval in intervals)
+    hi = max(interval[1] for interval in intervals)
+    if hi <= lo:
+        return None
+    return lo, hi
+
+
 def plot_lsf_comparison(
     runs: pd.DataFrame, out_dir: Path, formats: List[str], dpi: int
 ) -> List[Path]:
@@ -513,6 +563,8 @@ def plot_lsf_comparison(
             sub["ratio_sort"] = sub["ratio_tag"].map(lambda v: ratio_sort_key(str(v)))
             sub = sub.sort_values("ratio_sort")
             ax.set_visible(True)
+            curves = []
+            intervals = []
             for run in sub.itertuples(index=False):
                 path = Path(str(getattr(run, column)))
                 if not path.exists():
@@ -521,20 +573,31 @@ def plot_lsf_comparison(
                 if lsf.empty or "weight" not in lsf.columns:
                     continue
                 position_col = lsf.columns[0]
+                x = lsf[position_col].to_numpy(dtype=float)
+                raw_y = lsf["weight"].to_numpy(dtype=float)
                 y = lsf["weight"].to_numpy(dtype=float)
                 max_y = np.nanmax(y) if len(y) else np.nan
                 if np.isfinite(max_y) and max_y > 0:
                     y = y / max_y
+                curves.append((run.ratio_tag, x, y))
+                interval = weighted_interval(x, raw_y)
+                if interval is not None:
+                    intervals.append(interval)
+
+            xlim = combined_interval(intervals)
+            for ratio_tag, x, y in curves:
                 line = ax.plot(
-                    lsf[position_col],
+                    x,
                     y,
                     linewidth=1.3,
-                    label=format_ratio_label(str(run.ratio_tag)),
+                    label=format_ratio_label(str(ratio_tag)),
                 )[0]
-                if format_ratio_label(str(run.ratio_tag)) not in labels:
+                if format_ratio_label(str(ratio_tag)) not in labels:
                     handles.append(line)
-                    labels.append(format_ratio_label(str(run.ratio_tag)))
+                    labels.append(format_ratio_label(str(ratio_tag)))
                 wrote_any = True
+            if xlim is not None:
+                ax.set_xlim(*xlim)
             ax.set_title(f"{thickness_label_for_axis(thickness)} um", fontsize=9)
             ax.set_xlabel(f"{axis} (um)")
             ax.set_ylabel("LSF / max")
@@ -602,6 +665,20 @@ def plot_psf_comparison(
         n_cols = len(items)
         fig, axes = plt.subplots(1, n_cols, figsize=(max(3.0 * n_cols, 4.0), 3.2), squeeze=False)
         vmax = max(float(np.nanmax(image)) for _, _, _, image in items)
+        xlim = combined_interval(
+            [
+                interval
+                for _, xs, _, image in items
+                if (interval := weighted_interval(xs, np.sum(image, axis=0))) is not None
+            ]
+        )
+        ylim = combined_interval(
+            [
+                interval
+                for _, _, ys, image in items
+                if (interval := weighted_interval(ys, np.sum(image, axis=1))) is not None
+            ]
+        )
         last_image = None
         for ax, (ratio, xs, ys, image) in zip(axes.ravel(), items):
             last_image = ax.imshow(
@@ -617,6 +694,10 @@ def plot_psf_comparison(
             ax.set_xlabel("x (um)")
             ax.set_ylabel("y (um)")
             ax.tick_params(labelsize=7)
+            if xlim is not None:
+                ax.set_xlim(*xlim)
+            if ylim is not None:
+                ax.set_ylim(*ylim)
             style_axes(ax, square=True)
         if last_image is not None:
             fig.colorbar(last_image, ax=axes.ravel().tolist(), label="Detected weight", shrink=0.82)
