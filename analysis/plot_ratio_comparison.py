@@ -713,6 +713,96 @@ def plot_psf_comparison(
     return paths
 
 
+def plot_psf3d_comparison(
+    runs: pd.DataFrame, out_dir: Path, formats: List[str], dpi: int
+) -> List[Path]:
+    if runs.empty:
+        return []
+    ratio_tags = ordered_run_tags(runs)
+    panel_thicknesses = select_panel_thicknesses(runs["thickness_um"], 6)
+    if not ratio_tags or not panel_thicknesses:
+        return []
+
+    paths: List[Path] = []
+    for thickness in panel_thicknesses:
+        items = []
+        for ratio in ratio_tags:
+            match = runs[
+                (runs["ratio_tag"].astype(str) == ratio)
+                & np.isclose(runs["thickness_um"].astype(float), thickness)
+            ]
+            if match.empty:
+                continue
+            loaded = load_psf_image(Path(str(match.iloc[0]["psf_2d_csv"])))
+            if loaded is None:
+                continue
+            xs, ys, image = loaded
+            max_value = float(np.nanmax(image)) if image.size else 0.0
+            if max_value <= 0:
+                continue
+            items.append((ratio, xs, ys, image / max_value))
+        if not items:
+            continue
+
+        xlim = combined_interval(
+            [
+                interval
+                for _, xs, _, image in items
+                if (interval := weighted_interval(xs, np.sum(image, axis=0))) is not None
+            ]
+        )
+        ylim = combined_interval(
+            [
+                interval
+                for _, _, ys, image in items
+                if (interval := weighted_interval(ys, np.sum(image, axis=1))) is not None
+            ]
+        )
+        n_cols = len(items)
+        fig = plt.figure(figsize=(max(3.3 * n_cols, 4.0), 3.6))
+        for index, (ratio, xs, ys, image) in enumerate(items, start=1):
+            ax = fig.add_subplot(1, n_cols, index, projection="3d")
+            x_mask = np.ones_like(xs, dtype=bool)
+            y_mask = np.ones_like(ys, dtype=bool)
+            if xlim is not None:
+                x_mask = (xs >= xlim[0]) & (xs <= xlim[1])
+            if ylim is not None:
+                y_mask = (ys >= ylim[0]) & (ys <= ylim[1])
+            cropped_xs = xs[x_mask]
+            cropped_ys = ys[y_mask]
+            cropped_image = image[np.ix_(y_mask, x_mask)]
+            if cropped_image.size == 0:
+                continue
+            x_grid, y_grid = np.meshgrid(cropped_xs, cropped_ys)
+            ax.plot_surface(
+                x_grid,
+                y_grid,
+                cropped_image,
+                cmap="viridis",
+                vmin=0.0,
+                vmax=1.0,
+                linewidth=0,
+                antialiased=True,
+            )
+            ax.set_title(format_ratio_label(str(ratio)), fontsize=9)
+            ax.set_xlabel("x (um)", labelpad=4)
+            ax.set_ylabel("y (um)", labelpad=4)
+            ax.set_zlabel("PSF / max", labelpad=4)
+            ax.set_zlim(0.0, 1.0)
+            ax.view_init(elev=28, azim=-55)
+            ax.tick_params(labelsize=7, pad=1)
+        fig.suptitle(f"3D normalized PSF comparison at {thickness_label_for_axis(thickness)} um", y=0.98)
+        fig.subplots_adjust(left=0.02, right=0.98, bottom=0.02, top=0.84, wspace=0.05)
+        paths += save_all(
+            fig,
+            out_dir,
+            f"ratio_compare_psf3d_norm_{thickness_label_for_axis(thickness)}um",
+            formats,
+            dpi,
+        )
+    return paths
+
+
 def plot_phase_functions(
     df: pd.DataFrame, base_dir: Path, out_dir: Path, formats: List[str], dpi: int
 ) -> List[Path]:
@@ -935,6 +1025,7 @@ def main() -> int:
     runs = discover_runs(args.outputs_dir, args.ratio)
     paths += plot_lsf_comparison(runs, out_dir, args.formats, args.dpi)
     paths += plot_psf_comparison(runs, out_dir, args.formats, args.dpi)
+    paths += plot_psf3d_comparison(runs, out_dir, args.formats, args.dpi)
     paths += plot_mtf_comparison(load_mtf_metrics(args.outputs_dir, args.analysis_dir, args.ratio), out_dir, args.formats, args.dpi)
     paths += plot_phase_functions(combined, args.outputs_dir.parent, out_dir, args.formats, args.dpi)
 
