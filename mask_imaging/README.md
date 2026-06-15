@@ -246,7 +246,7 @@ radiograph_strip_50_100_200_500um_gamma.png
 固定 gamma：
 
 ```text
---display-gamma 0.5
+--display-gamma 0.7
 ```
 
 如果图仍然太暗，可以降低 gamma，例如：
@@ -267,9 +267,9 @@ python mask_imaging/run_mask_imaging.py \
 --image-range-um 5000      输出图像覆盖 readout_x/readout_y 的半宽范围。
 --raw-bin-size-um 25       photon_hit_map.png 的 bin 尺寸。
 --image-pixels 512         simulated_radiograph.png 的像素宽高。
---blur-sigma-px 1.2        radiograph 显示图使用的 Gaussian blur。
+--blur-sigma-px 1.5        radiograph 显示图使用的 Gaussian blur。
 --display-max 5000         PNG 固定显示上限；不做每图归一化。
---display-gamma 0.5        *_gamma.png 的固定 gamma；不做每图归一化。
+--display-gamma 0.7        *_gamma.png 的固定 gamma；不做每图归一化。
 --mask-threshold 0.5       黑白阈值。
 --white-transmission 1.0   白区透过率。
 --black-transmission 0.05  黑区内部透过率。

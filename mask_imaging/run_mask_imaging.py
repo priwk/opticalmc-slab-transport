@@ -143,7 +143,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--raw-bin-size-um", type=float, default=25.0)
     parser.add_argument("--image-pixels", type=int, default=512)
-    parser.add_argument("--blur-sigma-px", type=float, default=1.2)
+    parser.add_argument("--blur-sigma-px", type=float, default=1.5)
     parser.add_argument("--gamma", type=float, default=0.8, help="Legacy option; raw radiograph display no longer applies gamma.")
     parser.add_argument(
         "--display-max",
@@ -154,7 +154,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--display-gamma",
         type=float,
-        default=0.5,
+        default=0.7,
         help="Fixed gamma used only for *_gamma.png outputs after display-max clipping. No data-dependent normalization is applied.",
     )
     parser.add_argument("--keep-intermediates", action="store_true")
@@ -612,7 +612,8 @@ def save_ratio_strip(
     ratio_dir: Path,
     output_path: Path,
     display_max: float = 5000.0,
-    display_gamma: float = 0.5,
+    display_gamma: float = 0.7,
+    blur_sigma_px: float = 1.5,
 ) -> Optional[Path]:
     panels: List[Tuple[str, Optional[np.ndarray], Optional[np.ndarray]]] = []
     for thickness in thicknesses:
@@ -639,7 +640,7 @@ def save_ratio_strip(
         ax.set_yticks([])
         ax.set_title(f"{label} um", fontsize=10)
         if hist is not None:
-            image = raw_display_image(hist, 1.2, display_max)
+            image = raw_display_image(hist, blur_sigma_px, display_max)
         if image is None:
             ax.text(0.5, 0.5, "missing", ha="center", va="center", transform=ax.transAxes)
             for spine in ax.spines.values():
@@ -661,8 +662,9 @@ def save_ratio_strip(
         output_path.with_name(output_path.stem + "_gamma.png"),
         display_max,
         display_gamma,
+        blur_sigma_px,
     )
-    save_ratio_enhancement_outputs(ratio, panels, ratio_dir, output_path)
+    save_ratio_enhancement_outputs(ratio, panels, ratio_dir, output_path, blur_sigma_px)
     return output_path
 
 
@@ -672,6 +674,7 @@ def save_ratio_gamma_strip(
     output_path: Path,
     display_max: float,
     display_gamma: float,
+    blur_sigma_px: float,
 ) -> None:
     fig, axes = plt.subplots(1, len(panels), figsize=(3.0 * len(panels), 3.0), dpi=220)
     if len(panels) == 1:
@@ -682,7 +685,7 @@ def save_ratio_gamma_strip(
         ax.set_yticks([])
         ax.set_title(f"{label} um", fontsize=10)
         if hist is not None:
-            image = raw_display_image(hist, 1.2, display_max, display_gamma)
+            image = raw_display_image(hist, blur_sigma_px, display_max, display_gamma)
         if image is None:
             ax.text(0.5, 0.5, "missing", ha="center", va="center", transform=ax.transAxes)
             for spine in ax.spines.values():
@@ -705,6 +708,7 @@ def save_ratio_enhancement_outputs(
     panels: Sequence[Tuple[str, Optional[np.ndarray], Optional[np.ndarray]]],
     ratio_dir: Path,
     strip_path: Path,
+    blur_sigma_px: float,
 ) -> None:
     hist_panels = [(label, hist) for label, hist, _ in panels if hist is not None]
     if not hist_panels:
@@ -722,7 +726,7 @@ def save_ratio_enhancement_outputs(
         if hist is None:
             ax.text(0.5, 0.5, "missing", ha="center", va="center", transform=ax.transAxes)
         else:
-            ax.imshow(contrast_enhanced_image(hist, 1.2), cmap="gray", origin="lower", vmin=0.0, vmax=1.0)
+            ax.imshow(contrast_enhanced_image(hist, blur_sigma_px), cmap="gray", origin="lower", vmin=0.0, vmax=1.0)
         for spine in ax.spines.values():
             spine.set_visible(False)
     fig.suptitle(f"Ratio {ratio} contrast enhanced", y=0.98, fontsize=12)
@@ -732,7 +736,7 @@ def save_ratio_enhancement_outputs(
     print(f"wrote,{contrast_path}", flush=True)
 
     reference_label, reference_hist = hist_panels[0]
-    reference = gaussian_blur(reference_hist.astype(float), 1.2)
+    reference = gaussian_blur(reference_hist.astype(float), blur_sigma_px)
     ratio_images: List[Tuple[str, Optional[np.ndarray]]] = []
     diff_images: List[Tuple[str, Optional[np.ndarray]]] = []
     eps = max(float(np.percentile(reference[reference > 0.0], 1.0)), 1.0e-12) if np.any(reference > 0.0) else 1.0e-12
@@ -741,7 +745,7 @@ def save_ratio_enhancement_outputs(
             ratio_images.append((label, None))
             diff_images.append((label, None))
             continue
-        image = gaussian_blur(hist.astype(float), 1.2)
+        image = gaussian_blur(hist.astype(float), blur_sigma_px)
         ratio_images.append((label, np.clip((image + eps) / (reference + eps), 0.5, 1.5)))
         diff_images.append((label, np.clip((image - reference) / np.maximum(reference + eps, eps), -0.5, 0.5)))
 
@@ -767,7 +771,7 @@ def save_ratio_enhancement_outputs(
         if hist is None:
             continue
         row: Dict[str, object] = {"ratio": ratio, "thickness_um": label}
-        row.update(image_metrics(hist, 1.2))
+        row.update(image_metrics(hist, blur_sigma_px))
         metric_rows.append(row)
     metrics_path = ratio_dir / ("metrics_" + "_".join(label for label, _, _ in panels) + "um.csv")
     write_metrics_csv(metrics_path, metric_rows)
@@ -956,7 +960,15 @@ def main() -> int:
                 else PROJECT_ROOT / "outputs" / "mask_imaging" / ratio
             )
             strip_name = "radiograph_strip_" + "_".join(thickness_label(t) for t in thicknesses) + "um.png"
-            save_ratio_strip(ratio, thicknesses, ratio_dir, ratio_dir / strip_name, args.display_max, args.display_gamma)
+            save_ratio_strip(
+                ratio,
+                thicknesses,
+                ratio_dir,
+                ratio_dir / strip_name,
+                args.display_max,
+                args.display_gamma,
+                args.blur_sigma_px,
+            )
 
     if failures:
         print("mask_imaging failures:", flush=True)
