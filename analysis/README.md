@@ -91,6 +91,6 @@ analysis_results/
     ratio_comparison_summary.png
 ```
 
-绘图会优先使用本机 `analysis/fonts/` 下的本地字体文件，例如 `arial.ttf` 和
-`Deng.ttf`。这些字体文件不提交到 GitHub；需要时可从本机系统字体目录复制。坐标轴为
-封闭框、刻度向内；六宫格图按最多 6 个代表厚度自动抽取，单个小图保持方形。
+绘图会强制优先使用项目本地 `analysis/fonts/` 下的字体文件。当前包含 Arial regular、
+bold、italic、bold italic 以及相关 Arial 系列字体；中文缺字时可由本地 `Deng.ttf`
+补齐。坐标轴为封闭框、刻度向内；六宫格图按最多 6 个代表厚度自动抽取，单个小图保持方形。

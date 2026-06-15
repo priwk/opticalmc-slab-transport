@@ -29,6 +29,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import run_opticalmc_batch as batch  # noqa: E402
+from analysis.common import configure_plot_style  # noqa: E402
+
+
+configure_plot_style(PROJECT_ROOT / "analysis" / "fonts")
 
 
 def default_opticalmc_path() -> Path:

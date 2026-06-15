@@ -29,13 +29,24 @@ def configure_plot_style(font_dir: Optional[Path] = None) -> None:
     from matplotlib import font_manager
 
     font_dir = font_dir or Path(__file__).resolve().parent / "fonts"
-    local_fonts = [
-        font_dir / "arial.ttf",
-        font_dir / "Deng.ttf",
-    ]
+    local_fonts = []
+    for pattern in ("*.ttf", "*.TTF", "*.ttc", "*.TTC", "*.otf", "*.OTF"):
+        local_fonts.extend(font_dir.glob(pattern))
+    local_font_paths = {font_path.resolve() for font_path in local_fonts if font_path.exists()}
+    local_font_names = set()
     for font_path in local_fonts:
         if font_path.exists():
             font_manager.fontManager.addfont(str(font_path))
+            local_font_names.add(font_manager.FontProperties(fname=str(font_path)).get_name())
+
+    if local_font_names:
+        font_manager.fontManager.ttflist = [
+            entry
+            for entry in font_manager.fontManager.ttflist
+            if entry.name not in local_font_names or Path(entry.fname).resolve() in local_font_paths
+        ]
+        if hasattr(font_manager, "_findfont_cached"):
+            font_manager._findfont_cached.cache_clear()
 
     mpl.rcParams.update(
         {
