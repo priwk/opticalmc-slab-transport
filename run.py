@@ -16,21 +16,21 @@ REPO_ROOT = Path(__file__).resolve().parent
 PRESETS = {
     "quick": {
         "samples_per_step": 4,
-        "psf_bin_size_um": 10.0,
+        "psf_bin_size_um": 2.0,
         "psf_range_um": 300.0,
         "lsf_range_um": 2000.0,
         "description": "快速检查流程和参数，统计噪声较大。",
     },
     "normal": {
         "samples_per_step": 32,
-        "psf_bin_size_um": 10.0,
+        "psf_bin_size_um": 2.0,
         "psf_range_um": 500.0,
         "lsf_range_um": 5000.0,
         "description": "日常批量结果，速度和统计质量较均衡。",
     },
     "fine": {
         "samples_per_step": 128,
-        "psf_bin_size_um": 5.0,
+        "psf_bin_size_um": 2.0,
         "psf_range_um": 500.0,
         "lsf_range_um": 5000.0,
         "description": "更高统计质量，适合最终图表，耗时更长。",

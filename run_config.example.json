@@ -17,7 +17,7 @@
   "roulette_threshold": 0.0,
   "roulette_survival_probability": 1.0,
   "output_detected_photons": false,
-  "psf_bin_size_um": 10.0,
+  "psf_bin_size_um": 2.0,
   "psf_range_um": 500.0,
   "lsf_range_um": 5000.0,
   "optical_properties_csv": "optical_properties.csv",

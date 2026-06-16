@@ -123,7 +123,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--random-seed", type=int, default=12345)
     parser.add_argument("--incident-event-count", type=float, default=100000.0, help="Number of incident neutron histories used to normalize per-incident light output.")
     parser.add_argument("--max-steps", type=int, default=10000)
-    parser.add_argument("--psf-bin-size-um", type=float, default=10.0)
+    parser.add_argument("--psf-bin-size-um", type=float, default=2.0)
     parser.add_argument("--psf-range-um", type=float, default=500.0)
     parser.add_argument(
         "--lsf-range-um",
