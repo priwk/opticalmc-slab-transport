@@ -544,29 +544,37 @@ def plot_lsf_comparison(
 ) -> List[Path]:
     if runs.empty:
         return []
-    panel_thicknesses = select_panel_thicknesses(runs["thickness_um"], 6)
-    if not panel_thicknesses:
+    ratio_tags = ordered_run_tags(runs)[:6]
+    selected_thicknesses = select_panel_thicknesses(runs["thickness_um"], 6)
+    if not ratio_tags or not selected_thicknesses:
         return []
 
     paths: List[Path] = []
     for axis, column in [("x", "lsf_x_csv"), ("y", "lsf_y_csv")]:
+        for fmt in formats:
+            stale = out_dir / f"ratio_compare_lsf_{axis}_by_thickness_panels.{fmt.lstrip('.')}"
+            if stale.exists():
+                stale.unlink()
+
         fig, axes = plt.subplots(2, 3, figsize=(7.2, 4.8), squeeze=False)
         handles = []
         labels = []
         wrote_any = False
         for ax in axes.ravel():
             ax.set_visible(False)
-        for ax, thickness in zip(axes.ravel(), panel_thicknesses):
-            sub = runs[np.isclose(runs["thickness_um"].astype(float), thickness)].copy()
-            if sub.empty:
+        for ax, ratio in zip(axes.ravel(), ratio_tags):
+            ratio_runs = runs[runs["ratio_tag"].astype(str) == ratio].copy()
+            if ratio_runs.empty:
                 continue
-            sub["ratio_sort"] = sub["ratio_tag"].map(lambda v: ratio_sort_key(str(v)))
-            sub = sub.sort_values("ratio_sort")
             ax.set_visible(True)
             curves = []
             intervals = []
-            for run in sub.itertuples(index=False):
-                path = Path(str(getattr(run, column)))
+            for thickness in selected_thicknesses:
+                match = ratio_runs[np.isclose(ratio_runs["thickness_um"].astype(float), thickness)]
+                if match.empty:
+                    continue
+                run = match.iloc[0]
+                path = Path(str(run[column]))
                 if not path.exists():
                     continue
                 lsf = pd.read_csv(path)
@@ -579,38 +587,43 @@ def plot_lsf_comparison(
                 max_y = np.nanmax(y) if len(y) else np.nan
                 if np.isfinite(max_y) and max_y > 0:
                     y = y / max_y
-                curves.append((run.ratio_tag, x, y))
+                curves.append((float(thickness), x, y))
                 interval = weighted_interval(x, raw_y)
                 if interval is not None:
                     intervals.append(interval)
 
             xlim = combined_interval(intervals)
-            for ratio_tag, x, y in curves:
+            for thickness, x, y in curves:
+                label = f"{thickness_label_for_axis(thickness)} um"
                 line = ax.plot(
                     x,
                     y,
                     linewidth=1.3,
-                    label=format_ratio_label(str(ratio_tag)),
+                    marker="o",
+                    markersize=2.0,
+                    markevery=max(1, len(x) // 40),
+                    label=label,
                 )[0]
-                if format_ratio_label(str(ratio_tag)) not in labels:
+                if label not in labels:
                     handles.append(line)
-                    labels.append(format_ratio_label(str(ratio_tag)))
+                    labels.append(label)
                 wrote_any = True
             if xlim is not None:
                 ax.set_xlim(*xlim)
-            ax.set_title(f"{thickness_label_for_axis(thickness)} um", fontsize=9)
+            ax.set_ylim(0.0, 1.05)
+            ax.set_title(format_ratio_label(str(ratio)), fontsize=9)
             ax.set_xlabel(f"{axis} (um)")
-            ax.set_ylabel("LSF / max")
+            ax.set_ylabel("Binned LSF / max")
             ax.tick_params(labelsize=7)
             style_axes(ax, square=True)
         if not wrote_any:
             plt.close(fig)
             continue
         if handles:
-            fig.legend(handles, labels, loc="upper center", ncols=min(3, len(labels)), fontsize=8)
-        fig.suptitle(f"LSF-{axis} comparison", y=0.99)
+            fig.legend(handles, labels, loc="upper center", ncols=min(6, len(labels)), fontsize=8)
+        fig.suptitle(f"LSF-{axis} vs thickness", y=0.99)
         fig.tight_layout(rect=(0.02, 0.0, 1.0, 0.92))
-        paths += save_all(fig, out_dir, f"ratio_compare_lsf_{axis}_by_thickness_panels", formats, dpi)
+        paths += save_all(fig, out_dir, f"ratio_compare_lsf_{axis}_by_ratio_panels", formats, dpi)
     return paths
 
 
