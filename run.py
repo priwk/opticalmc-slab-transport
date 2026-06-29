@@ -139,6 +139,15 @@ def parse_args() -> argparse.Namespace:
         help="光学散射强度缩放；各向异性模式下作用于 mu_s_prime，并同步派生 mu_s。",
     )
     parser.add_argument(
+        "--optical-properties",
+        type=Path,
+        default=None,
+        help=(
+            "直接使用指定 optical_properties.csv。"
+            "用于 IAD/StageD 参数 profile 对照；如果提供，则不从 StageD/RVE 参数自动生成。"
+        ),
+    )
+    parser.add_argument(
         "--phase-function-csv",
         type=Path,
         default=None,
@@ -153,8 +162,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--transport-scattering-mode",
         choices=("reduced-isotropic", "anisotropic"),
-        default="anisotropic",
-        help="输运散射模式：默认 anisotropic，使用 StageD 的 mu_s_prime 和 g 计算 mu_s。",
+        default="reduced-isotropic",
+        help="输运散射模式：默认 reduced-isotropic，使用 mu_s_prime 作为 mu_s 并设 g=0。",
     )
     parser.add_argument(
         "--max-steps",
@@ -318,6 +327,8 @@ def main() -> int:
         "--max-steps",
         str(args.max_steps),
     ]
+    if args.optical_properties is not None:
+        cmd.extend(["--optical-properties", str(args.optical_properties)])
     if args.incident_events is not None:
         cmd.extend(["--incident-event-count", str(args.incident_events)])
     if args.phase_function_csv is not None:

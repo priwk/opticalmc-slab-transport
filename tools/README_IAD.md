@@ -149,6 +149,55 @@ musp_eff_1_per_mm
 g_model
 ```
 
+## IAD transport-equivalent profile
+
+IAD 输出仍然不会被 OpticalMC 自动读取。若 `g` 不可靠或不可用，推荐把 IAD 的
+`mua + musp` 转成 OpticalMC 的 reduced-isotropic profile，而不是把 IAD 的
+`mus_per_um` 直接作为逐散射系数使用。
+
+推荐主线是：
+
+```text
+canonical optical parameters = mu_a + mu_s_prime
+g = 0
+mu_s_per_um = mu_s_prime_per_um
+transport_scattering_mode = reduced-isotropic
+phase_function_csv =
+```
+
+从 g=0 effective 输出生成 OpticalMC 可直接读取的 `optical_properties.csv`：
+
+```powershell
+python .\tools\make_iad_transport_profile.py `
+  --iad-csv .\iad_results_g0_effective.csv `
+  --ratio 1-1 `
+  --wavelength-nm 450 `
+  --aggregate mean `
+  --output .\inputs\optical_profiles\1-1\iad_g0_transport\optical_properties.csv
+```
+
+再直接运行 OpticalMC：
+
+```powershell
+python .\run.py 1-1 50 150 `
+  --preset quick `
+  --optical-properties .\inputs\optical_profiles\1-1\iad_g0_transport\optical_properties.csv `
+  --transport-scattering-mode reduced-isotropic `
+  --run-label iad_g0_transport `
+  --no-plot
+```
+
+若要和 StageD 参数做 A/B 前的参数检查，只比较 `mu_a` 和 `mu_s_prime`：
+
+```powershell
+python .\tools\compare_transport_profiles.py `
+  --stageD-csv .\inputs\optical_params\1-1\monte_carlo_recommended_inputs.csv `
+  --iad-profile .\inputs\optical_profiles\1-1\iad_g0_transport\optical_properties.csv `
+  --output .\outputs\profile_compare\1-1_stageD_vs_iad_g0.csv
+```
+
+reduced-isotropic 模型适合做 R/T、厚度趋势和输运等效敏感性；不适合用来解释真实单次散射角分布、强前向散射 PSF 细节或 ballistic/early photon 行为。
+
 ## 常用示例
 
 只跑一个样品，使用默认 450 nm：

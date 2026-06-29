@@ -93,7 +93,7 @@ python .\run.py 1-2 30 40 50 70 100 150 200 300 --preset fine
 
 1. 读取 `inputs/alpha_li_steps/<ratio>/<thickness>_alpha_li_steps.csv`。
 2. 读取 `inputs/optical_params/<ratio>/rve_raw_optical_params_by_ratio.csv` 中的 merged optical params。
-3. 默认使用 bulk 主列估算宏观 OpticalMC 参数，并生成 `outputs/<ratio>/optical_properties.csv`。
+3. 默认使用 bulk 主列的 `mu_a + mu_s_prime` 生成 reduced-isotropic 宏观参数表，即 `mu_s = mu_s_prime`、`g = 0`。
 4. 生成 ZnS source/event 文件到 `inputs/generated_sources/<ratio>`。
 5. 为每个厚度生成 `outputs/<ratio>/<thickness>/run_config.generated.json`。
 6. 调用 `OpticalMC.exe`。
@@ -235,20 +235,20 @@ rve_raw_optical_params_by_ratio.csv
 ```
 
 脚本会优先读取 `monte_carlo_recommended_inputs.csv`，如果没有再读 JSON 或旧的
-`rve_raw_optical_params_by_ratio.csv`。推荐输入的映射是：
+`rve_raw_optical_params_by_ratio.csv`。推荐输入的 canonical 光学参数是
+`mu_a + mu_s_prime`：
 
 ```text
 recommended_mu_a_per_um       -> mu_a_per_um
-recommended_g1                -> g
 recommended_mu_s_prime_per_um -> mu_s_prime_per_um
-recommended_mu_s_prime_per_um / (1 - recommended_g1)
-                              -> mu_s_per_um
+recommended_mu_s_prime_per_um -> mu_s_per_um   (reduced-isotropic)
+g                              -> 0
 ```
 
-默认生产路线使用 HG(g) 相函数，不再自动读取 StageD 的
+默认 reduced-isotropic 路线不依赖 StageD/IAD 的 `g`，也不自动读取 StageD 的
 `phase_function_file` 或 `phase_function_mean_by_ratio.csv`。`recommended_mu_s_per_um`
-只作为输入诊断列保留；实际逐散射 `mu_s_per_um` 由
-`mu_s_prime_per_um / (1 - g)` 计算。
+只作为输入诊断列保留；只有显式指定 `--transport-scattering-mode anisotropic`
+时，才会使用 `mu_s_prime_per_um / (1 - g)` 计算逐散射 `mu_s_per_um`。
 
 如果回退到旧 merged 表，则读取：
 
@@ -260,18 +260,24 @@ mu_s_prime_mean_per_um / (1 - g_mean)
                           -> mu_s_per_um
 ```
 
-逐散射 OpticalMC 使用 `mu_a + mu_s` 抽样自由程；`mu_s_prime` 只作为输运/扩散诊断输出，不会作为额外散射过程。默认运行模式是
-`--transport-scattering-mode anisotropic --scattering-model hg`，即使用
-StageD 的 `mu_a`、`mu_s_prime`、`g`，并按 HG(g) 采样散射角：
+逐散射 OpticalMC 使用 `mu_a + mu_s` 抽样自由程；`mu_s_prime` 只作为输运/扩散诊断输出，不会作为额外散射过程。默认推荐运行模式是
+`--transport-scattering-mode reduced-isotropic`，即使用 `mu_a + mu_s_prime`
+作为主参数，并设 `g = 0`、`mu_s = mu_s_prime`：
 
 ```powershell
 python .\run.py 1-2 30 40 50
 ```
 
-如需做旧的表格相函数对照，必须显式指定 `tabulated`：
+如需复现旧的 HG(g) 各向异性路线，显式指定：
 
 ```powershell
-python .\run.py 1-2 30 40 50 --scattering-model tabulated --phase-function-csv .\path\to\phase_function.csv
+python .\run.py 1-2 30 40 50 --transport-scattering-mode anisotropic --scattering-model hg
+```
+
+如需做旧的表格相函数对照，必须显式指定 `anisotropic` 和 `tabulated`：
+
+```powershell
+python .\run.py 1-2 30 40 50 --transport-scattering-mode anisotropic --scattering-model tabulated --phase-function-csv .\path\to\phase_function.csv
 ```
 
 `total_*` 和 `boundary_*` 列默认不会进入宏观 OpticalMC。若需要对照，可以显式指定：
@@ -286,6 +292,48 @@ python .\run.py 1-2 30 40 50 --optical-component boundary
 ```powershell
 python .\run_opticalmc_batch.py --ratio 1-2 --optical-properties .\some_optical_properties.csv
 ```
+
+## IAD transport-equivalent profile
+
+当 `g` 不可靠或不可用时，不要把 IAD 的 `mus_per_um` 直接塞进 OpticalMC。
+推荐用 `mu_a + mu_s_prime` 作为主参数，并使用 reduced-isotropic 模式：
+
+```text
+g = 0
+mu_s_per_um = mu_s_prime_per_um
+transport_scattering_mode = reduced-isotropic
+```
+
+从 IAD g=0 effective 输出生成 OpticalMC profile：
+
+```powershell
+python .\tools\make_iad_transport_profile.py `
+  --iad-csv .\iad_results_g0_effective.csv `
+  --ratio 1-1 `
+  --output .\inputs\optical_profiles\1-1\iad_g0_transport\optical_properties.csv
+```
+
+直接用这个 profile 运行：
+
+```powershell
+python .\run.py 1-1 50 150 `
+  --preset quick `
+  --optical-properties .\inputs\optical_profiles\1-1\iad_g0_transport\optical_properties.csv `
+  --transport-scattering-mode reduced-isotropic `
+  --run-label iad_g0_transport `
+  --no-plot
+```
+
+只比较 StageD 和 IAD 的 `mu_a + mu_s_prime`：
+
+```powershell
+python .\tools\compare_transport_profiles.py `
+  --stageD-csv .\inputs\optical_params\1-1\monte_carlo_recommended_inputs.csv `
+  --iad-profile .\inputs\optical_profiles\1-1\iad_g0_transport\optical_properties.csv `
+  --output .\outputs\profile_compare\1-1_stageD_vs_iad_g0.csv
+```
+
+reduced-isotropic 模型适合做 R/T、厚度趋势和输运等效敏感性；不适合用来解释真实单次散射角分布、强前向散射 PSF 细节或 ballistic/early photon 行为。
 
 默认 `max_steps` 为 100000。强散射参数下如果达到最大步数仍未吸收或出界，
 底层 C++ 会把该光子计入 `lost_weight`，因此旧的 10000 步默认值可能造成

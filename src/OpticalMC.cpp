@@ -656,25 +656,73 @@ OpticalProperties selectOpticalProperties(const std::string& path, const RunConf
         op.ratio_tag = toString(row, "ratio_tag");
         op.wavelength_nm = toDouble(row, "wavelength_nm", 0.0);
         op.mu_a_per_um = toDouble(row, "mu_a_per_um", 0.0);
-        op.mu_s_per_um = toDouble(row, "mu_s_per_um", 0.0);
-        op.g = toDouble(row, "g", 0.0);
+        const bool has_mu_s = optionalDouble(row, "mu_s_per_um", op.mu_s_per_um);
+        if (!has_mu_s) {
+            op.mu_s_per_um = 0.0;
+        }
+        const bool has_g = optionalDouble(row, "g", op.g);
+        if (!has_g) {
+            op.g = 0.0;
+        }
         op.n_eff = toDouble(row, "n_eff", 1.0);
         op.transport_scattering_mode = trim(toString(row, "transport_scattering_mode"));
         if (op.transport_scattering_mode.empty()) {
             op.transport_scattering_mode = "legacy";
         }
-        if (!optionalDouble(row, "mu_s_input_per_um", op.mu_s_input_per_um)) {
-            op.mu_s_input_per_um = op.mu_s_per_um;
+        const bool has_mu_s_input = optionalDouble(row, "mu_s_input_per_um", op.mu_s_input_per_um);
+        const bool has_g_input = optionalDouble(row, "g_input", op.g_input);
+        const bool has_mu_s_prime = optionalDouble(row, "mu_s_prime_per_um", op.mu_s_prime_per_um);
+        if (!has_mu_s_prime) {
+            op.mu_s_prime_per_um = std::numeric_limits<double>::quiet_NaN();
         }
-        if (!optionalDouble(row, "g_input", op.g_input)) {
-            op.g_input = op.g;
-        }
-        op.mu_s_prime_per_um = toDouble(row, "mu_s_prime_per_um",
-                                        std::numeric_limits<double>::quiet_NaN());
-        if (!optionalDouble(row, "mu_s_prime_input_per_um", op.mu_s_prime_input_per_um)) {
+        const bool has_mu_s_prime_input =
+            optionalDouble(row, "mu_s_prime_input_per_um", op.mu_s_prime_input_per_um);
+        if (!has_mu_s_prime_input) {
             op.mu_s_prime_input_per_um = op.mu_s_prime_per_um;
         }
         op.phase_function_csv = toString(row, "phase_function_csv");
+        if (op.transport_scattering_mode == "reduced-isotropic") {
+            if (!std::isfinite(op.mu_s_prime_per_um)) {
+                throw std::runtime_error(
+                    "reduced-isotropic optical_properties row requires mu_s_prime_per_um");
+            }
+            op.mu_s_per_um = op.mu_s_prime_per_um;
+            op.g = 0.0;
+            if (!has_mu_s_input) {
+                op.mu_s_input_per_um = op.mu_s_prime_per_um;
+            }
+            if (!has_g_input) {
+                op.g_input = std::numeric_limits<double>::quiet_NaN();
+            }
+            if (!has_mu_s_prime_input) {
+                op.mu_s_prime_input_per_um = op.mu_s_prime_per_um;
+            }
+            op.phase_function_csv.clear();
+        } else if (op.transport_scattering_mode == "anisotropic") {
+            if (!has_g || !std::isfinite(op.g) || op.g <= -1.0 || op.g >= 1.0) {
+                throw std::runtime_error(
+                    "anisotropic optical_properties row requires finite g with -1 < g < 1");
+            }
+            if (!has_mu_s && std::isfinite(op.mu_s_prime_per_um)) {
+                op.mu_s_per_um = op.mu_s_prime_per_um / (1.0 - op.g);
+            }
+            if (!has_mu_s_input) {
+                op.mu_s_input_per_um = op.mu_s_per_um;
+            }
+            if (!has_g_input) {
+                op.g_input = op.g;
+            }
+            if (!has_mu_s_prime_input) {
+                op.mu_s_prime_input_per_um = op.mu_s_prime_per_um;
+            }
+        } else {
+            if (!has_mu_s_input) {
+                op.mu_s_input_per_um = op.mu_s_per_um;
+            }
+            if (!has_g_input) {
+                op.g_input = op.g;
+            }
+        }
         if (!cfg.ratio_tag.empty() && op.ratio_tag != cfg.ratio_tag) {
             continue;
         }
@@ -1467,7 +1515,7 @@ int main(int argc, char** argv) {
         std::cout << "optical_g," << op.g << "\n";
         std::cout << "optical_mu_s_prime_per_um," << op.mu_s_prime_per_um << "\n";
         std::cout << "optical_mu_s_input_per_um," << op.mu_s_input_per_um << "\n";
-        std::cout << "optical_g_input," << op.g_input << "\n";
+        std::cout << "optical_g_input," << num(op.g_input) << "\n";
         std::cout << "optical_mu_s_prime_input_per_um," << op.mu_s_prime_input_per_um << "\n";
         std::cout << "optical_phase_function_mode,"
                   << phaseFunctionMode(op) << "\n";

@@ -66,10 +66,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--transport-scattering-mode",
         choices=("reduced-isotropic", "anisotropic"),
-        default="anisotropic",
+        default="reduced-isotropic",
         help=(
-            "Transport mode. anisotropic derives mu_s from selected mu_s_prime/(1-g) "
-            "and uses HG(g) unless tabulated scattering is explicitly requested."
+            "Transport mode. Default reduced-isotropic uses g=0 and mu_s=mu_s_prime. "
+            "Use anisotropic to derive mu_s from selected mu_s_prime/(1-g)."
         ),
     )
     parser.add_argument(
@@ -388,7 +388,7 @@ def build_optical_properties(args: argparse.Namespace, run_root: Path) -> Path:
         return args.optical_properties
 
     if not hasattr(args, "transport_scattering_mode"):
-        args.transport_scattering_mode = "anisotropic"
+        args.transport_scattering_mode = "reduced-isotropic"
     if not hasattr(args, "run_label"):
         args.run_label = None
 
@@ -472,27 +472,28 @@ def build_optical_properties(args: argparse.Namespace, run_root: Path) -> Path:
                 except ValueError:
                     mu_s_raw = math.nan
                     mu_s_source = ""
-                g, g_source = first_float(row, g_columns, rve_path, "anisotropy")
                 mu_s_prime_raw, mu_s_prime_source = first_float(
                     row, mu_s_prime_columns, rve_path, "reduced scattering"
                 )
-                mu_s_input = mu_s_raw if math.isfinite(mu_s_raw) else mu_s_prime_raw
-                g_input = g
-                mu_s_prime_input = mu_s_prime_raw
                 mu_a = mu_a_raw * args.mu_a_scale
+                mu_s_prime_input = mu_s_prime_raw
                 if args.transport_scattering_mode == "reduced-isotropic":
-                    mu_s = mu_s_prime_raw * args.mu_s_scale
-                    g = 0.0
                     mu_s_prime = mu_s_prime_raw * args.mu_s_scale
-                    mu_s_source = mu_s_prime_source
-                    g_source = "reduced_isotropic"
+                    mu_s = mu_s_prime
+                    g = 0.0
+                    mu_s_input = mu_s_raw if math.isfinite(mu_s_raw) else mu_s_prime_raw
+                    g_input = ""
+                    mu_s_source = f"{mu_s_prime_source} as mu_s because reduced-isotropic"
+                    g_source = "not_required_reduced_isotropic"
                 else:
+                    g, g_source = first_float(row, g_columns, rve_path, "anisotropy")
                     if not math.isfinite(g) or g <= -1.0 or g >= 1.0:
                         raise ValueError(
                             f"Invalid anisotropy g={g:.12g} from {g_source}; expected -1 < g < 1."
                         )
                     mu_s_from_prime_raw = mu_s_prime_raw / (1.0 - g)
                     mu_s_input = mu_s_raw if math.isfinite(mu_s_raw) else mu_s_from_prime_raw
+                    g_input = g
                     mu_s_prime = mu_s_prime_raw * args.mu_s_scale
                     mu_s = mu_s_prime / (1.0 - g)
                     mu_s_raw_source = mu_s_source
@@ -523,7 +524,7 @@ def build_optical_properties(args: argparse.Namespace, run_root: Path) -> Path:
                     "mu_s_prime_per_um": f"{mu_s_prime:.12g}",
                     "phase_function_csv": phase_function_csv,
                     "mu_s_input_per_um": f"{mu_s_input:.12g}",
-                    "g_input": f"{g_input:.12g}",
+                    "g_input": "" if g_input == "" else f"{g_input:.12g}",
                     "mu_s_prime_input_per_um": f"{mu_s_prime_input:.12g}",
                     "mu_a_source_column": mu_a_source,
                     "mu_s_source_column": mu_s_source,
