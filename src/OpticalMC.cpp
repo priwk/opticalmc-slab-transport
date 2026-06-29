@@ -19,6 +19,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -40,7 +41,7 @@ struct RunConfig {
     std::string xy_boundary = "infinite";
     uint64_t random_seed = 12345;
     int num_threads = 1;
-    int max_steps = 10000;
+    int max_steps = 100000;
     double roulette_threshold = 0.0;
     double roulette_survival_probability = 1.0;
     std::string front_reflection_model = "aluminum_fresnel";
@@ -60,6 +61,7 @@ struct RunConfig {
     std::string output_dir = ".";
     double wavelength_nm = std::numeric_limits<double>::quiet_NaN();
     double incident_event_count = 0.0;
+    std::string incident_event_count_source = "unspecified";
 };
 
 struct OpticalProperties {
@@ -89,6 +91,8 @@ struct SourceStep {
     Vec3 p0;
     Vec3 p1;
     double n_photon_step = 0.0;
+    double trajectory_weight = 1.0;
+    bool trajectory_weight_applied_to_photon_yield = true;
     bool has_psf_anchor = false;
     double psf_anchor_x = 0.0;
     double psf_anchor_y = 0.0;
@@ -96,9 +100,13 @@ struct SourceStep {
 
 struct EventSource {
     std::string source_event_uid;
+    std::string physical_event_uid;
     std::string eventID;
     double depth_um = 0.0;
     double total_n_photon = 0.0;
+    double trajectory_weight = 1.0;
+    double n_trajectory_samples = 1.0;
+    bool trajectory_weight_applied_to_photon_yield = true;
     bool has_psf_anchor = false;
     double psf_anchor_x = 0.0;
     double psf_anchor_y = 0.0;
@@ -260,6 +268,27 @@ bool optionalDouble(const std::unordered_map<std::string, std::string>& row,
         return false;
     }
     return std::isfinite(value);
+}
+
+bool optionalBool(const std::unordered_map<std::string, std::string>& row,
+                  const std::string& key, bool& value) {
+    const auto it = row.find(key);
+    if (it == row.end() || trim(it->second).empty()) {
+        return false;
+    }
+    std::string text = trim(it->second);
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (text == "true" || text == "1" || text == "yes" || text == "y") {
+        value = true;
+        return true;
+    }
+    if (text == "false" || text == "0" || text == "no" || text == "n") {
+        value = false;
+        return true;
+    }
+    return false;
 }
 
 int toInt(const std::unordered_map<std::string, std::string>& row, const std::string& key,
@@ -465,6 +494,9 @@ RunConfig readConfig(const std::string& path) {
     if (jsonString(text, "output_dir", s)) cfg.output_dir = s;
     if (jsonNumber(text, "wavelength_nm", d)) cfg.wavelength_nm = d;
     if (jsonNumber(text, "incident_event_count", d)) cfg.incident_event_count = d;
+    if (jsonString(text, "incident_event_count_source", s)) {
+        cfg.incident_event_count_source = s;
+    }
 
     if (cfg.thickness_um <= 0.0) {
         throw std::runtime_error("run_config.json must provide positive thickness_um");
@@ -524,6 +556,15 @@ std::vector<SourceStep> readSources(const std::string& path) {
         s.p1 = {toDouble(row, "src_x1_um"), toDouble(row, "src_y1_um"),
                 toDouble(row, "src_z1_um")};
         s.n_photon_step = toDouble(row, "n_photon_step");
+        if (!optionalDouble(row, "adjusted_trajectory_weight", s.trajectory_weight)) {
+            optionalDouble(row, "trajectory_weight", s.trajectory_weight);
+        }
+        optionalBool(row, "trajectory_weight_applied_to_photon_yield",
+                     s.trajectory_weight_applied_to_photon_yield);
+        if (!s.trajectory_weight_applied_to_photon_yield) {
+            s.n_photon_step *= s.trajectory_weight;
+            s.trajectory_weight_applied_to_photon_yield = true;
+        }
         double anchor_x = 0.0;
         double anchor_y = 0.0;
         if (optionalDouble(row, "macro_anchor_x_um", anchor_x) &&
@@ -544,9 +585,29 @@ std::vector<EventSource> readEvents(const std::string& path) {
     for (const auto& row : readCsvRows(path)) {
         EventSource e;
         e.source_event_uid = toString(row, "source_event_uid");
+        e.physical_event_uid = toString(row, "physical_event_uid");
+        if (trim(e.physical_event_uid).empty()) {
+            e.physical_event_uid = e.source_event_uid;
+        }
         e.eventID = toString(row, "eventID");
         e.depth_um = toDouble(row, "depth_um", 0.0);
         e.total_n_photon = toDouble(row, "total_n_photon", 0.0);
+        if (!optionalDouble(row, "trajectory_weight", e.trajectory_weight) &&
+            !optionalDouble(row, "sum_trajectory_weight", e.trajectory_weight)) {
+            optionalDouble(row, "sum_valid_trajectory_weight", e.trajectory_weight);
+        }
+        if (!optionalDouble(row, "n_replays_valid", e.n_trajectory_samples)) {
+            optionalDouble(row, "n_replays_total", e.n_trajectory_samples);
+        }
+        if (e.n_trajectory_samples <= 0.0) {
+            e.n_trajectory_samples = 1.0;
+        }
+        optionalBool(row, "trajectory_weight_applied_to_photon_yield",
+                     e.trajectory_weight_applied_to_photon_yield);
+        if (!e.trajectory_weight_applied_to_photon_yield) {
+            e.total_n_photon *= e.trajectory_weight;
+            e.trajectory_weight_applied_to_photon_yield = true;
+        }
         double anchor_x = 0.0;
         double anchor_y = 0.0;
         if (optionalDouble(row, "macro_anchor_x_um", anchor_x) &&
@@ -1128,9 +1189,29 @@ void writeSummary(const std::string& path, const RunConfig& cfg, const OpticalPr
         events.begin(), events.end(), 0.0,
         [](double s, const EventSource& e) { return s + e.total_n_photon; });
     const double n_events = static_cast<double>(events.size());
+    double n_trajectory_samples = 0.0;
+    double n_effective_captures = 0.0;
+    std::unordered_set<std::string> physical_captures;
+    for (const auto& event : events) {
+        n_trajectory_samples += event.n_trajectory_samples;
+        n_effective_captures += event.trajectory_weight;
+        const auto physical_uid = trim(event.physical_event_uid).empty()
+                                      ? event.source_event_uid
+                                      : event.physical_event_uid;
+        if (!trim(physical_uid).empty()) {
+            physical_captures.insert(physical_uid);
+        }
+    }
+    const double n_physical_captures =
+        physical_captures.empty() ? n_effective_captures
+                                  : static_cast<double>(physical_captures.size());
+    const double capture_denominator =
+        n_effective_captures > 0.0 ? n_effective_captures : n_physical_captures;
     const double incident_events = cfg.incident_event_count > 0.0
                                        ? cfg.incident_event_count
                                        : inferIncidentEventCount(events);
+    const std::string incident_source =
+        cfg.incident_event_count > 0.0 ? cfg.incident_event_count_source : "inferred_from_events";
     const double rms_x = rmsFromSums(acc.detected_weight, acc.detected_sum_x, acc.detected_sum_x2);
     const double rms_y = rmsFromSums(acc.detected_weight, acc.detected_sum_y, acc.detected_sum_y2);
     const double rms_r = std::isfinite(rms_x) && std::isfinite(rms_y)
@@ -1162,9 +1243,13 @@ void writeSummary(const std::string& path, const RunConfig& cfg, const OpticalPr
            "front_reflection_model,front_reflectance,front_reflection_mode,"
            "front_aluminum_n,front_aluminum_k,back_reflection_model,back_air_n,"
            "mu_s_prime_per_um,mu_s_prime_from_g_per_um,mu_tr_per_um,absorption_length_um,scattering_length_um,transport_mfp_um,diffusion_length_um,"
-           "n_events,incident_event_count,capture_fraction,n_source_steps,samples_per_step,total_source_weight,total_detected_weight,"
+           "n_events,n_trajectory_samples,n_physical_captures,n_effective_captures,"
+           "incident_event_count,incident_event_count_source,capture_fraction,"
+           "n_source_steps,samples_per_step,total_source_weight,total_detected_weight,"
            "front_escape_weight,back_escape_weight,absorbed_weight,lost_weight,"
-           "mean_light_per_capture,mean_detected_light_per_capture,mean_light_per_incident,mean_detected_light_per_incident,detection_efficiency,"
+           "mean_light_per_capture,mean_detected_light_per_capture,"
+           "mean_light_per_physical_capture,mean_detected_light_per_physical_capture,"
+           "mean_light_per_incident,mean_detected_light_per_incident,detection_efficiency,"
            "psf_bin_size_um,psf_range_um,lsf_range_um,lsf_x_in_range_fraction,lsf_y_in_range_fraction,psf_2d_in_range_fraction,"
            "spot_rms_x,spot_rms_y,spot_rms_r,fwhm_x,fwhm_y\n";
     out << csvEscape(cfg.ratio_tag.empty() ? op.ratio_tag : cfg.ratio_tag) << ','
@@ -1183,14 +1268,22 @@ void writeSummary(const std::string& path, const RunConfig& cfg, const OpticalPr
         << num(mu_s_prime) << ',' << num(mu_s_prime_from_g) << ',' << num(mu_tr) << ','
         << num(absorption_length_um) << ',' << num(scattering_length_um) << ','
         << num(transport_mfp_um) << ',' << num(diffusion_length_um) << ','
-        << events.size() << ',' << num(incident_events) << ','
-        << num(incident_events > 0.0 ? n_events / incident_events : 0.0) << ','
+        << events.size() << ',' << num(n_trajectory_samples) << ','
+        << num(n_physical_captures) << ',' << num(n_effective_captures) << ','
+        << num(incident_events) << ',' << csvEscape(incident_source) << ','
+        << num(incident_events > 0.0 ? capture_denominator / incident_events : 0.0) << ','
         << acc.step_stats.size() << ',' << cfg.samples_per_step << ','
         << num(acc.total_source_weight) << ',' << num(acc.detected_weight) << ','
         << num(acc.front_escape_weight) << ',' << num(acc.back_escape_weight) << ','
         << num(acc.absorbed_weight) << ',' << num(acc.lost_weight) << ','
-        << num(n_events > 0.0 ? total_capture_light / n_events : 0.0) << ','
-        << num(n_events > 0.0 ? acc.detected_weight / n_events : 0.0) << ','
+        << num(capture_denominator > 0.0 ? total_capture_light / capture_denominator : 0.0)
+        << ','
+        << num(capture_denominator > 0.0 ? acc.detected_weight / capture_denominator : 0.0)
+        << ','
+        << num(n_physical_captures > 0.0 ? total_capture_light / n_physical_captures : 0.0)
+        << ','
+        << num(n_physical_captures > 0.0 ? acc.detected_weight / n_physical_captures : 0.0)
+        << ','
         << num(incident_events > 0.0 ? total_capture_light / incident_events : 0.0) << ','
         << num(incident_events > 0.0 ? acc.detected_weight / incident_events : 0.0) << ','
         << num(acc.total_source_weight > 0.0 ? acc.detected_weight / acc.total_source_weight : 0.0)
@@ -1209,7 +1302,9 @@ void writeEventSummary(const std::string& path, const std::vector<EventSource>& 
     if (!out) {
         throw std::runtime_error("cannot write " + path);
     }
-    out << "source_event_uid,eventID,depth_um,total_n_photon,detected_weight,"
+    out << "source_event_uid,physical_event_uid,eventID,depth_um,total_n_photon,"
+           "trajectory_weight,n_trajectory_samples,trajectory_weight_applied_to_photon_yield,"
+           "detected_weight,"
            "detection_efficiency,centroid_x,centroid_y,spot_rms_x,spot_rms_y,spot_rms_r\n";
     for (const auto& event : events) {
         EventStats stats;
@@ -1226,8 +1321,11 @@ void writeEventSummary(const std::string& path, const std::vector<EventSource>& 
         const double rr = std::isfinite(rx) && std::isfinite(ry)
                               ? std::sqrt(rx * rx + ry * ry)
                               : std::numeric_limits<double>::quiet_NaN();
-        out << csvEscape(event.source_event_uid) << ',' << csvEscape(event.eventID) << ','
+        out << csvEscape(event.source_event_uid) << ','
+            << csvEscape(event.physical_event_uid) << ',' << csvEscape(event.eventID) << ','
             << num(event.depth_um) << ',' << num(event.total_n_photon) << ','
+            << num(event.trajectory_weight) << ',' << num(event.n_trajectory_samples) << ','
+            << (event.trajectory_weight_applied_to_photon_yield ? "true" : "false") << ','
             << num(stats.detected_weight) << ','
             << num(event.total_n_photon > 0.0 ? stats.detected_weight / event.total_n_photon : 0.0)
             << ',' << num(cx) << ',' << num(cy) << ',' << num(rx) << ',' << num(ry) << ','

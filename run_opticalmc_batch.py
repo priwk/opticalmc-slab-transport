@@ -15,6 +15,9 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 
+DEFAULT_INCIDENT_EVENT_COUNT = 1000000.0
+
+
 def default_opticalmc_path() -> Path:
     return Path("OpticalMC.exe" if os.name == "nt" else "OpticalMC")
 
@@ -49,21 +52,24 @@ def parse_args() -> argparse.Namespace:
         "--phase-function-csv",
         type=Path,
         default=None,
-        help="Optional tabulated phase_function.csv. When provided, OpticalMC samples cos(theta) from this table instead of HG.",
+        help="Optional tabulated phase_function.csv. Used only with --scattering-model tabulated.",
     )
     parser.add_argument(
         "--scattering-model",
         choices=("auto", "tabulated", "hg"),
-        default="auto",
-        help="Scattering model for OpticalMC. auto follows recommended inputs, tabulated requires/uses a phase function, hg forces HG(g).",
+        default="hg",
+        help=(
+            "Scattering model for OpticalMC. Default hg uses HG(g). auto also uses HG(g); "
+            "tabulated explicitly uses a phase-function CSV."
+        ),
     )
     parser.add_argument(
         "--transport-scattering-mode",
         choices=("reduced-isotropic", "anisotropic"),
-        default="reduced-isotropic",
+        default="anisotropic",
         help=(
-            "Transport mode. reduced-isotropic uses StageD mu_s_prime as the propagated "
-            "mu_s with g=0; anisotropic uses StageD mu_s, g, and optional phase functions."
+            "Transport mode. anisotropic derives mu_s from selected mu_s_prime/(1-g) "
+            "and uses HG(g) unless tabulated scattering is explicitly requested."
         ),
     )
     parser.add_argument(
@@ -75,10 +81,10 @@ def parse_args() -> argparse.Namespace:
         "--optical-component",
         choices=("bulk", "total", "boundary"),
         default="bulk",
-        help="Which merged optical parameter columns to use for mu_s/g. Default bulk uses mu_s_mean_per_um and g_mean.",
+        help="Which merged optical parameter columns to use for mu_s_prime/g. Default bulk uses body-scattering columns.",
     )
     parser.add_argument("--mu-a-scale", type=float, default=1.0, help="Scale mu_a after reading merged optical params; useful for sensitivity checks.")
-    parser.add_argument("--mu-s-scale", type=float, default=1.0, help="Scale selected mu_s after reading merged optical params; useful for sensitivity checks.")
+    parser.add_argument("--mu-s-scale", type=float, default=1.0, help="Scale selected mu_s_prime and the derived mu_s; useful for sensitivity checks.")
     parser.add_argument("--transparent-optics", action="store_true", help="Debug mode: set mu_a=mu_s=g=0 in generated optical_properties.csv.")
     parser.add_argument(
         "--xy-anchor-mode",
@@ -121,8 +127,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--samples-per-step", type=int, default=16)
     parser.add_argument("--num-threads", type=int, default=4)
     parser.add_argument("--random-seed", type=int, default=12345)
-    parser.add_argument("--incident-event-count", type=float, default=100000.0, help="Number of incident neutron histories used to normalize per-incident light output.")
-    parser.add_argument("--max-steps", type=int, default=10000)
+    parser.add_argument(
+        "--incident-event-count",
+        type=float,
+        default=None,
+        help=(
+            "Number of incident neutron histories used to normalize per-incident light "
+            f"output. Default: {DEFAULT_INCIDENT_EVENT_COUNT:.0f}."
+        ),
+    )
+    parser.add_argument("--max-steps", type=int, default=100000)
     parser.add_argument("--psf-bin-size-um", type=float, default=2.0)
     parser.add_argument("--psf-range-um", type=float, default=500.0)
     parser.add_argument(
@@ -327,17 +341,10 @@ def phase_function_from_row(
 ) -> str:
     if getattr(args, "transport_scattering_mode", "reduced-isotropic") == "reduced-isotropic":
         return ""
-    if args.scattering_model == "hg":
+    if args.scattering_model in ("auto", "hg"):
         return ""
     candidate = args.phase_function_csv
     if candidate is None:
-        recommended_model = (row.get("recommended_scattering_model") or "").strip()
-        use_recommended_phase = args.scattering_model == "tabulated" or (
-            args.scattering_model == "auto"
-            and recommended_model in ("", "tabulated_phase_function", "tabulated")
-        )
-        if not use_recommended_phase:
-            return ""
         for column in ("phase_function_csv", "phase_function_path", "phase_function_file"):
             value = row.get(column)
             if value and value.strip():
@@ -365,9 +372,15 @@ def phase_function_from_row(
 def run_root_for_args(args: argparse.Namespace) -> Path:
     if args.run_label:
         return args.outputs_dir / args.ratio / args.run_label
-    if args.transport_scattering_mode == "anisotropic":
-        return args.outputs_dir / args.ratio / "modeB_anisotropic"
     return args.outputs_dir / args.ratio
+
+
+def resolve_incident_event_count(args: argparse.Namespace) -> Tuple[float, str]:
+    if args.incident_event_count is None:
+        return DEFAULT_INCIDENT_EVENT_COUNT, "default_1000000"
+    if args.incident_event_count <= 0.0:
+        raise ValueError("--incident-event-count must be positive")
+    return args.incident_event_count, "manual_cli"
 
 
 def build_optical_properties(args: argparse.Namespace, run_root: Path) -> Path:
@@ -375,7 +388,7 @@ def build_optical_properties(args: argparse.Namespace, run_root: Path) -> Path:
         return args.optical_properties
 
     if not hasattr(args, "transport_scattering_mode"):
-        args.transport_scattering_mode = "reduced-isotropic"
+        args.transport_scattering_mode = "anisotropic"
     if not hasattr(args, "run_label"):
         args.run_label = None
 
@@ -452,12 +465,18 @@ def build_optical_properties(args: argparse.Namespace, run_root: Path) -> Path:
                             file=sys.stderr,
                         )
                         warned_mu_a_fallback = True
-                mu_s_raw, mu_s_source = first_float(row, mu_s_columns, rve_path, "scattering")
+                try:
+                    mu_s_raw, mu_s_source = first_float(
+                        row, mu_s_columns, rve_path, "scattering"
+                    )
+                except ValueError:
+                    mu_s_raw = math.nan
+                    mu_s_source = ""
                 g, g_source = first_float(row, g_columns, rve_path, "anisotropy")
                 mu_s_prime_raw, mu_s_prime_source = first_float(
                     row, mu_s_prime_columns, rve_path, "reduced scattering"
                 )
-                mu_s_input = mu_s_raw
+                mu_s_input = mu_s_raw if math.isfinite(mu_s_raw) else mu_s_prime_raw
                 g_input = g
                 mu_s_prime_input = mu_s_prime_raw
                 mu_a = mu_a_raw * args.mu_a_scale
@@ -468,15 +487,27 @@ def build_optical_properties(args: argparse.Namespace, run_root: Path) -> Path:
                     mu_s_source = mu_s_prime_source
                     g_source = "reduced_isotropic"
                 else:
-                    mu_s = mu_s_raw * args.mu_s_scale
+                    if not math.isfinite(g) or g <= -1.0 or g >= 1.0:
+                        raise ValueError(
+                            f"Invalid anisotropy g={g:.12g} from {g_source}; expected -1 < g < 1."
+                        )
+                    mu_s_from_prime_raw = mu_s_prime_raw / (1.0 - g)
+                    mu_s_input = mu_s_raw if math.isfinite(mu_s_raw) else mu_s_from_prime_raw
                     mu_s_prime = mu_s_prime_raw * args.mu_s_scale
-                    mu_s_prime_from_g = mu_s * (1.0 - g)
-                    denom = max(abs(mu_s_prime), abs(mu_s_prime_from_g), 1.0e-30)
-                    if abs(mu_s_prime - mu_s_prime_from_g) / denom > 0.10:
+                    mu_s = mu_s_prime / (1.0 - g)
+                    mu_s_raw_source = mu_s_source
+                    mu_s_source = f"{mu_s_prime_source}/(1-g)"
+                    if math.isfinite(mu_s_raw):
+                        denom = max(abs(mu_s_raw), abs(mu_s_from_prime_raw), 1.0e-30)
+                        rel_diff = abs(mu_s_raw - mu_s_from_prime_raw) / denom
+                    else:
+                        rel_diff = 0.0
+                    if rel_diff > 0.10:
                         print(
-                            "warning: anisotropic transport has mu_s_prime_per_um "
-                            f"({mu_s_prime:.12g}) differing from mu_s_per_um*(1-g) "
-                            f"({mu_s_prime_from_g:.12g}) by more than 10%.",
+                            "warning: anisotropic transport ignores "
+                            f"{mu_s_raw_source or 'mu_s input'}={mu_s_raw:.12g} and derives "
+                            f"mu_s={mu_s_from_prime_raw:.12g} from "
+                            f"{mu_s_prime_source}/(1-g).",
                             file=sys.stderr,
                         )
             phase_function_csv = "" if args.transparent_optics else phase_function_from_row(args, row, rve_path)
@@ -609,7 +640,11 @@ def write_thickness_light_summary(run_root: Path, thicknesses: Sequence[float]) 
         "transport_mfp_um",
         "diffusion_length_um",
         "n_events",
+        "n_trajectory_samples",
+        "n_physical_captures",
+        "n_effective_captures",
         "incident_event_count",
+        "incident_event_count_source",
         "capture_fraction",
         "n_source_steps",
         "samples_per_step",
@@ -621,6 +656,8 @@ def write_thickness_light_summary(run_root: Path, thicknesses: Sequence[float]) 
         "lost_weight",
         "mean_light_per_capture",
         "mean_detected_light_per_capture",
+        "mean_light_per_physical_capture",
+        "mean_detected_light_per_physical_capture",
         "mean_light_per_incident",
         "mean_detected_light_per_incident",
         "detection_efficiency",
@@ -664,6 +701,17 @@ def write_thickness_light_summary(run_root: Path, thicknesses: Sequence[float]) 
 
 def main() -> int:
     args = parse_args()
+    try:
+        incident_event_count, incident_event_count_source = resolve_incident_event_count(args)
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if args.phase_function_csv is not None and args.scattering_model != "tabulated":
+        print(
+            "warning: --phase-function-csv is ignored unless "
+            "--scattering-model tabulated is selected; using HG(g).",
+            file=sys.stderr,
+        )
     if args.transport_scattering_mode == "reduced-isotropic" and (
         args.phase_function_csv is not None or args.scattering_model == "tabulated"
     ):
@@ -685,6 +733,8 @@ def main() -> int:
     print(f"ratio,{args.ratio}", flush=True)
     print(f"thicknesses,{','.join(thickness_label(t) for t in thicknesses)}", flush=True)
     print(f"n_eff,{effective_index(args):.12g}", flush=True)
+    print(f"incident_event_count,{incident_event_count:.12g}", flush=True)
+    print(f"incident_event_count_source,{incident_event_count_source}", flush=True)
     print(f"transport_scattering_mode,{args.transport_scattering_mode}", flush=True)
     print(f"run_root,{run_root}", flush=True)
     print(f"optical_properties,{optical_properties}", flush=True)
@@ -757,7 +807,8 @@ def main() -> int:
             "samples_per_step": args.samples_per_step,
             "xy_boundary": "infinite",
             "random_seed": args.random_seed,
-            "incident_event_count": args.incident_event_count,
+            "incident_event_count": incident_event_count,
+            "incident_event_count_source": incident_event_count_source,
             "num_threads": args.num_threads,
             "max_steps": args.max_steps,
             "roulette_threshold": 0.0,

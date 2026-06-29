@@ -55,6 +55,7 @@ STEP_FIELDS = [
     "n_photon_step",
     "trajectory_weight",
     "adjusted_trajectory_weight",
+    "trajectory_weight_applied_to_photon_yield",
     "alphali_replay_index",
     "alphali_replay_count",
     "wavelength_nm",
@@ -88,6 +89,7 @@ EVENT_FIELDS = [
     "n_replays_bad",
     "sum_trajectory_weight",
     "sum_valid_trajectory_weight",
+    "trajectory_weight_applied_to_photon_yield",
     "total_edep_keV",
     "total_visible_edep_keV",
     "total_n_photon",
@@ -292,6 +294,7 @@ def first_event_record(
         "n_replays_bad": 0,
         "sum_trajectory_weight": 1.0,
         "sum_valid_trajectory_weight": 1.0,
+        "trajectory_weight_applied_to_photon_yield": "true",
         "total_edep_keV": 0.0,
         "total_visible_edep_keV": 0.0,
         "total_n_photon": 0.0,
@@ -615,6 +618,7 @@ def make_stageb_outputs(args: argparse.Namespace) -> Tuple[Path, Path, int, int]
                         "n_photon_step": n_photon_step,
                         "trajectory_weight": raw_weight,
                         "adjusted_trajectory_weight": adjusted_weight,
+                        "trajectory_weight_applied_to_photon_yield": "true",
                         "alphali_replay_index": row.get(
                             "alphali_replay_index", anchor.get("alphali_replay_index", "")
                         ),
@@ -800,6 +804,9 @@ def make_alpha_outputs(args: argparse.Namespace) -> Tuple[Path, Path, int, int]:
                         "edep_keV": edep_keV,
                         "visible_edep_keV": visible_edep_keV,
                         "n_photon_step": n_photon_step,
+                        "trajectory_weight": 1.0,
+                        "adjusted_trajectory_weight": 1.0,
+                        "trajectory_weight_applied_to_photon_yield": "true",
                         "wavelength_nm": args.wavelength_nm,
                     }
                 )

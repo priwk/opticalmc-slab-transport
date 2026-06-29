@@ -177,10 +177,10 @@ python .\run.py 1-2 30 --front-reflection-mode none --back-reflection-model none
 默认入射 neutron history 数是：
 
 ```text
-100000
+1000000
 ```
 
-如果某批数据不是 100000 个入射 history，可以显式指定：
+如果某批数据不是 1000000 个入射 history，可以显式指定：
 
 ```powershell
 python .\run.py 1-2 30 40 50 --incident-events 200000
@@ -239,25 +239,39 @@ rve_raw_optical_params_by_ratio.csv
 
 ```text
 recommended_mu_a_per_um       -> mu_a_per_um
-recommended_mu_s_per_um       -> mu_s_per_um
 recommended_g1                -> g
 recommended_mu_s_prime_per_um -> mu_s_prime_per_um
-phase_function_file           -> phase_function_csv
+recommended_mu_s_prime_per_um / (1 - recommended_g1)
+                              -> mu_s_per_um
 ```
+
+默认生产路线使用 HG(g) 相函数，不再自动读取 StageD 的
+`phase_function_file` 或 `phase_function_mean_by_ratio.csv`。`recommended_mu_s_per_um`
+只作为输入诊断列保留；实际逐散射 `mu_s_per_um` 由
+`mu_s_prime_per_um / (1 - g)` 计算。
 
 如果回退到旧 merged 表，则读取：
 
 ```text
 mu_a_expected_mean_per_um -> mu_a_per_um
-mu_s_mean_per_um          -> mu_s_per_um
 g_mean                    -> g
 mu_s_prime_mean_per_um    -> mu_s_prime_per_um
+mu_s_prime_mean_per_um / (1 - g_mean)
+                          -> mu_s_per_um
 ```
 
-逐散射 OpticalMC 使用 `mu_a + mu_s` 抽样自由程；`mu_s_prime` 只作为输运/扩散诊断输出，不会作为额外散射过程。默认 `--scattering-model auto` 会按推荐输入使用 `phase_function_mean_by_ratio.csv`；若要强制 HG(g)，加：
+逐散射 OpticalMC 使用 `mu_a + mu_s` 抽样自由程；`mu_s_prime` 只作为输运/扩散诊断输出，不会作为额外散射过程。默认运行模式是
+`--transport-scattering-mode anisotropic --scattering-model hg`，即使用
+StageD 的 `mu_a`、`mu_s_prime`、`g`，并按 HG(g) 采样散射角：
 
 ```powershell
-python .\run.py 1-2 30 40 50 --scattering-model hg
+python .\run.py 1-2 30 40 50
+```
+
+如需做旧的表格相函数对照，必须显式指定 `tabulated`：
+
+```powershell
+python .\run.py 1-2 30 40 50 --scattering-model tabulated --phase-function-csv .\path\to\phase_function.csv
 ```
 
 `total_*` 和 `boundary_*` 列默认不会进入宏观 OpticalMC。若需要对照，可以显式指定：
@@ -273,11 +287,12 @@ python .\run.py 1-2 30 40 50 --optical-component boundary
 python .\run_opticalmc_batch.py --ratio 1-2 --optical-properties .\some_optical_properties.csv
 ```
 
-如果手动提供 tabulated phase function，MC 会按 `cos_theta_min/cos_theta_max` 和
-`probability` 或 `probability_mean` 采样散射角余弦：
+默认 `max_steps` 为 100000。强散射参数下如果达到最大步数仍未吸收或出界，
+底层 C++ 会把该光子计入 `lost_weight`，因此旧的 10000 步默认值可能造成
+厚屏结果截断。需要对照时可以显式覆盖：
 
 ```powershell
-python .\run.py 1-2 30 40 50 --phase-function-csv .\path\to\phase_function.csv
+python .\run.py 1-2 30 40 50 --max-steps 200000
 ```
 
 ## 控制光子数
@@ -478,8 +493,14 @@ mean_light_per_incident
 mean_detected_light_per_incident
 mean_light_per_capture
 mean_detected_light_per_capture
+mean_light_per_physical_capture
+mean_detected_light_per_physical_capture
 detection_efficiency
 capture_fraction
+n_trajectory_samples
+n_physical_captures
+n_effective_captures
+incident_event_count_source
 lsf_x_in_range_fraction
 lsf_y_in_range_fraction
 psf_2d_in_range_fraction
@@ -506,8 +527,14 @@ mean_light_per_incident
 mean_detected_light_per_incident
 mean_light_per_capture
 mean_detected_light_per_capture
+mean_light_per_physical_capture
+mean_detected_light_per_physical_capture
 detection_efficiency
 capture_fraction
+n_trajectory_samples
+n_physical_captures
+n_effective_captures
+incident_event_count_source
 spot_rms_r
 fwhm_x
 fwhm_y
@@ -517,7 +544,10 @@ fwhm_y
 
 ```text
 per incident neutron：按入射中子数归一，适合画“厚度-总出光量/读出光量”。
-per capture：只在已发生俘获的 event 上平均，适合看“每次俘获后的平均光学读出效率”。
+per capture：按有效物理俘获数平均；StageB replay 权重已经在预处理阶段进入
+`n_photon_step`，OpticalMC 不会再重复乘权重。
+per physical capture：按 `physical_event_uid` 去重后的物理俘获数平均，用于检查 replay
+聚合口径。
 ```
 
 如果研究屏厚优化，主图通常优先看：

@@ -539,6 +539,29 @@ def combined_interval(intervals: List[tuple[float, float]]) -> Optional[tuple[fl
     return lo, hi
 
 
+def center_peak_lsf_for_plot(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    if len(x) < 3 or np.any(np.isclose(x, 0.0)):
+        return x, y
+    order = np.argsort(x)
+    x = np.asarray(x, dtype=float)[order]
+    y = np.asarray(y, dtype=float)[order]
+    neg = np.where(x < 0.0)[0]
+    pos = np.where(x > 0.0)[0]
+    if len(neg) == 0 or len(pos) == 0:
+        return x, y
+    left = int(neg[-1])
+    right = int(pos[0])
+    if right != left + 1:
+        return x, y
+    spacing = median_spacing(x)
+    if abs(abs(x[left]) - abs(x[right])) > 0.25 * spacing:
+        return x, y
+    peak_y = max(float(y[left]), float(y[right]))
+    new_x = np.concatenate([x[:left], np.array([0.0]), x[right + 1 :]])
+    new_y = np.concatenate([y[:left], np.array([peak_y]), y[right + 1 :]])
+    return new_x, new_y
+
+
 def plot_lsf_comparison(
     runs: pd.DataFrame, out_dir: Path, formats: List[str], dpi: int
 ) -> List[Path]:
@@ -582,13 +605,15 @@ def plot_lsf_comparison(
                     continue
                 position_col = lsf.columns[0]
                 x = lsf[position_col].to_numpy(dtype=float)
+                raw_x = x.copy()
                 raw_y = lsf["weight"].to_numpy(dtype=float)
                 y = lsf["weight"].to_numpy(dtype=float)
                 max_y = np.nanmax(y) if len(y) else np.nan
                 if np.isfinite(max_y) and max_y > 0:
                     y = y / max_y
+                x, y = center_peak_lsf_for_plot(x, y)
                 curves.append((float(thickness), x, y))
-                interval = weighted_interval(x, raw_y)
+                interval = weighted_interval(raw_x, raw_y)
                 if interval is not None:
                     intervals.append(interval)
 
@@ -620,9 +645,16 @@ def plot_lsf_comparison(
             plt.close(fig)
             continue
         if handles:
-            fig.legend(handles, labels, loc="upper center", ncols=min(6, len(labels)), fontsize=8)
+            fig.legend(
+                handles,
+                labels,
+                loc="upper center",
+                bbox_to_anchor=(0.5, 0.935),
+                ncols=min(6, len(labels)),
+                fontsize=8,
+            )
         fig.suptitle(f"LSF-{axis} vs thickness", y=0.99)
-        fig.tight_layout(rect=(0.02, 0.0, 1.0, 0.92))
+        fig.tight_layout(rect=(0.02, 0.0, 1.0, 0.86))
         paths += save_all(fig, out_dir, f"ratio_compare_lsf_{axis}_by_ratio_panels", formats, dpi)
     return paths
 

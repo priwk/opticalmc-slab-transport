@@ -111,7 +111,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--incident-events",
         type=float,
-        default=1000000.0,
+        default=None,
         help="入射 neutron history 数，用于 per-incident 出光量归一。默认 1000000。",
     )
     parser.add_argument(
@@ -130,31 +130,37 @@ def parse_args() -> argparse.Namespace:
         "--optical-component",
         choices=("bulk", "total", "boundary"),
         default="bulk",
-        help="选择 merged optical params 中的输运列。默认 bulk 使用体散射主列；total/boundary 用于对照。",
+        help="选择 merged optical params 中的 mu_s_prime/g 来源。默认 bulk 使用体散射主列；total/boundary 用于对照。",
     )
     parser.add_argument(
         "--mu-s-scale",
         type=float,
         default=1.0,
-        help="光学散射系数缩放，用于敏感性检查。",
+        help="光学散射强度缩放；各向异性模式下作用于 mu_s_prime，并同步派生 mu_s。",
     )
     parser.add_argument(
         "--phase-function-csv",
         type=Path,
         default=None,
-        help="可选 phase_function.csv；提供后 MC 将按表格 cos(theta) 采样，否则使用 HG(g)。",
+        help="可选 phase_function.csv；需同时指定 --scattering-model tabulated 才会使用。",
     )
     parser.add_argument(
         "--scattering-model",
         choices=("auto", "tabulated", "hg"),
-        default="auto",
-        help="散射模型：auto 使用推荐输入；tabulated 强制表格相函数；hg 强制 HG(g)。",
+        default="hg",
+        help="散射模型：默认 hg 使用 HG(g)；tabulated 显式使用表格相函数；auto 等同 HG(g)。",
     )
     parser.add_argument(
         "--transport-scattering-mode",
         choices=("reduced-isotropic", "anisotropic"),
-        default="reduced-isotropic",
-        help="输运散射模式：默认 reduced-isotropic；anisotropic 使用 StageD 的 mu_s/g 和相函数。",
+        default="anisotropic",
+        help="输运散射模式：默认 anisotropic，使用 StageD 的 mu_s_prime 和 g 计算 mu_s。",
+    )
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=100000,
+        help="每个光子最大相互作用步数。默认 100000，避免强散射参数下过早计入 lost_weight。",
     )
     parser.add_argument(
         "--run-label",
@@ -299,8 +305,6 @@ def main() -> int:
         str(args.back_air_n),
         "--yield-zns-per-MeV",
         str(args.yield_zns_per_MeV),
-        "--incident-event-count",
-        str(args.incident_events),
         "--optical-component",
         args.optical_component,
         "--mu-a-scale",
@@ -311,7 +315,11 @@ def main() -> int:
         args.scattering_model,
         "--transport-scattering-mode",
         args.transport_scattering_mode,
+        "--max-steps",
+        str(args.max_steps),
     ]
+    if args.incident_events is not None:
+        cmd.extend(["--incident-event-count", str(args.incident_events)])
     if args.phase_function_csv is not None:
         cmd.extend(["--phase-function-csv", str(args.phase_function_csv)])
     if args.run_label:
@@ -346,19 +354,22 @@ def main() -> int:
     print(f"读出面: {args.readout}", flush=True)
     print(f"光学参数: {args.optical_component}", flush=True)
     print(f"输运散射模式: {args.transport_scattering_mode}", flush=True)
+    print(
+        "入射 neutron history: "
+        + (f"{args.incident_events:.12g}" if args.incident_events is not None else "1000000 (默认)"),
+        flush=True,
+    )
+    print(f"最大步数: {args.max_steps}", flush=True)
     print("执行命令:", flush=True)
     print(" ".join(cmd), flush=True)
 
     if not args.dry_run:
         subprocess.run(cmd, check=True)
         if not args.no_plot and not args.preprocess_only:
-            default_run_root = args.run_label is None and args.transport_scattering_mode == "reduced-isotropic"
-            if default_run_root:
+            if args.run_label is None:
                 plot_cmd = [sys.executable, str(REPO_ROOT / "plot_thickness_light.py"), args.ratio]
             else:
-                run_root = Path("outputs") / args.ratio / (
-                    args.run_label if args.run_label else "modeB_anisotropic"
-                )
+                run_root = Path("outputs") / args.ratio / args.run_label
                 plot_cmd = [
                     sys.executable,
                     str(REPO_ROOT / "plot_thickness_light.py"),

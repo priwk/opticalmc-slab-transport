@@ -1,2 +1,2 @@
 ratio_tag,wavelength_nm,mu_a_per_um,mu_s_per_um,g,n_eff,transport_scattering_mode,mu_s_prime_per_um,phase_function_csv,mu_s_input_per_um,g_input,mu_s_prime_input_per_um
-1-1,450,0.001,0.005,0,1.6,reduced-isotropic,0.005,,0.02,0.75,0.005
+1-1,450,0.001,0.02,0.75,1.6,anisotropic,0.005,,0.02,0.75,0.005

@@ -323,7 +323,11 @@ def write_analysis_csv(df: pd.DataFrame, out_dir: Path) -> Path:
         "mean_light_per_incident",
         "mean_detected_light_per_incident",
         "detected_light_norm",
+        "n_trajectory_samples",
+        "n_physical_captures",
+        "n_effective_captures",
         "incident_event_count",
+        "incident_event_count_source",
         "capture_fraction",
         "detection_efficiency",
         "detection_efficiency_percent",
@@ -335,6 +339,8 @@ def write_analysis_csv(df: pd.DataFrame, out_dir: Path) -> Path:
         "mu_s_input_per_um",
         "g_input",
         "mu_s_prime_input_per_um",
+        "mean_light_per_physical_capture",
+        "mean_detected_light_per_physical_capture",
     ]
     existing = [col for col in columns if col in df.columns]
     out_path = out_dir / "thickness_plot_data.csv"

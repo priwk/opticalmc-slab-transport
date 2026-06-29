@@ -40,6 +40,7 @@ def default_opticalmc_path() -> Path:
 
 
 DEFAULT_STRIP_THICKNESSES = ["50", "100", "200", "500"]
+DEFAULT_INCIDENT_EVENT_COUNT = 1000000.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,12 +71,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--preprocessor", type=Path, default=PROJECT_ROOT / "make_macro_zns_sources.py")
     parser.add_argument("--optical-properties", type=Path, default=None)
     parser.add_argument("--phase-function-csv", type=Path, default=None)
-    parser.add_argument("--scattering-model", choices=("auto", "tabulated", "hg"), default="auto")
+    parser.add_argument("--scattering-model", choices=("auto", "tabulated", "hg"), default="hg")
     parser.add_argument(
         "--transport-scattering-mode",
         choices=("reduced-isotropic", "anisotropic"),
         default="anisotropic",
-        help="anisotropic uses mu_s/g and the tabulated phase function when available.",
+        help="anisotropic derives mu_s from mu_s_prime/(1-g) and uses HG(g) by default.",
     )
     parser.add_argument("--optical-component", choices=("bulk", "total", "boundary"), default="bulk")
     parser.add_argument("--mu-a-scale", type=float, default=1.0)
@@ -104,8 +105,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--samples-per-step", type=int, default=16)
     parser.add_argument("--num-threads", type=int, default=4)
     parser.add_argument("--random-seed", type=int, default=12345)
-    parser.add_argument("--incident-event-count", type=float, default=100000.0)
-    parser.add_argument("--max-steps", type=int, default=10000)
+    parser.add_argument("--incident-event-count", type=float, default=None)
+    parser.add_argument("--max-steps", type=int, default=100000)
     parser.add_argument("--psf-bin-size-um", type=float, default=10.0)
     parser.add_argument("--psf-range-um", type=float, default=500.0)
     parser.add_argument("--lsf-range-um", type=float, default=5000.0)
@@ -880,6 +881,14 @@ def run_one_mask_imaging(args: argparse.Namespace) -> int:
 
         optical_properties = batch.build_optical_properties(optical_args(args), temp_dir / "optical")
         mc_dir = temp_dir / "mc"
+        if args.incident_event_count is None:
+            incident_event_count = DEFAULT_INCIDENT_EVENT_COUNT
+            incident_event_count_source = "default_1000000"
+        elif args.incident_event_count <= 0.0:
+            raise ValueError("--incident-event-count must be positive")
+        else:
+            incident_event_count = args.incident_event_count
+            incident_event_count_source = "manual_cli"
         config = {
             "ratio_tag": args.ratio,
             "thickness_um": float(args.thickness),
@@ -894,7 +903,8 @@ def run_one_mask_imaging(args: argparse.Namespace) -> int:
             "samples_per_step": args.samples_per_step,
             "xy_boundary": "infinite",
             "random_seed": args.random_seed,
-            "incident_event_count": args.incident_event_count,
+            "incident_event_count": incident_event_count,
+            "incident_event_count_source": incident_event_count_source,
             "num_threads": args.num_threads,
             "max_steps": args.max_steps,
             "roulette_threshold": 0.0,
